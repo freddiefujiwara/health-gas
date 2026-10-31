@@ -13,6 +13,7 @@ const SHEET_NAMES = [
   "medication_log",
   "goals_settings",
   "data_dictionary",
+  "lab_results",
 ];
 
 const getSpreadsheet = () => SpreadsheetApp.openById(SPREADSHEET_ID);
