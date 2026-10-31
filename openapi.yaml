@@ -1,0 +1,57 @@
+openapi: 3.0.3
+info:
+  title: Google Sheet Health Manager API
+  version: 1.0.0
+  description: |
+    Read-only web API for reading health data from the "health" Google Sheet
+    via a Google Apps Script deployment. The API supports JSON and JSONP
+    responses, depending on whether a `callback` query parameter is supplied.
+    There is no authentication for now.
+servers:
+  - url: https://script.google.com/macros/s/AKfycbx_placeholder
+    description: Google Apps Script web app deployment (replace with the actual deployment URL)
+paths:
+  /exec:
+    get:
+      summary: Read health data from the sheets
+      description: |
+        Without parameters, returns an object keyed by sheet name, where each
+        value is the list of rows of that sheet converted into objects using
+        the header row as keys. With the `sheet` parameter, returns only the
+        rows of that sheet as an array.
+      parameters:
+        - in: query
+          name: sheet
+          required: false
+          schema:
+            type: string
+            enum:
+              - overview
+              - daily_nutrition
+              - steps
+              - meals
+              - period_summaries
+              - body_composition
+              - body_segments
+              - medication_plan
+              - medication_log
+              - goals_settings
+              - data_dictionary
+          description: Name of a single sheet to return.
+        - in: query
+          name: callback
+          required: false
+          schema:
+            type: string
+          description: JSONP callback function name.
+      responses:
+        '200':
+          description: Health data from the requested sheet(s).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            application/javascript:
+              schema:
+                type: string
