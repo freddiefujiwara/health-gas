@@ -8,8 +8,8 @@ info:
     responses, depending on whether a `callback` query parameter is supplied.
     There is no authentication for now.
 servers:
-  - url: https://script.google.com/macros/s/AKfycbx_placeholder
-    description: Google Apps Script web app deployment (replace with the actual deployment URL)
+  - url: https://script.google.com/macros/s/AKfycbxGka-swbhzKbZsVUVzCbIpFHkkBf1Wr8DDsyBsHJtWhZv0LLWjlMqOSQbHHP2Cc3-O
+    description: Google Apps Script web app deployment
 paths:
   /exec:
     get:

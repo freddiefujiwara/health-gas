@@ -31,6 +31,12 @@ name. The first row of each sheet is used as the keys.
 There is no authentication for now, so anyone who knows the deployment URL
 can read the data. Keep the URL private.
 
+## Deployment
+
+- Apps Script project: `health` (bound to the "health" spreadsheet)
+- Web app URL: https://script.google.com/macros/s/AKfycbxGka-swbhzKbZsVUVzCbIpFHkkBf1Wr8DDsyBsHJtWhZv0LLWjlMqOSQbHHP2Cc3-O/exec
+- Access: ANYONE, no authentication for now. Keep the URL private.
+
 ## API Specification
 
 An OpenAPI 3.0 specification is available in [`openapi.yaml`](openapi.yaml).
