@@ -18,6 +18,115 @@ const SHEET_NAMES = [
 
 const getSpreadsheet = () => SpreadsheetApp.openById(SPREADSHEET_ID);
 
+// --- Temporary share sessions (doctor viewing links) ---
+// A logged-in owner can issue a URL token that grants read-only access for
+// SHARE_TTL_SECONDS without a Google account. Sessions are stored in a
+// dedicated sheet (token hashes only, never raw tokens), which doubles as
+// an audit log. This sheet is NOT part of SHEET_NAMES and is never exposed.
+
+const SHARE_SHEET_NAME = 'share_sessions';
+const SHARE_TTL_SECONDS = 1800;
+const SHARE_HEADERS = [
+  'token_hash',
+  'issued_at',
+  'expires_at',
+  'revoked_at',
+  'access_count',
+  'last_accessed_at',
+];
+
+const getShareSheet_ = () => {
+  const spreadsheet = getSpreadsheet();
+  let sheet = spreadsheet.getSheetByName(SHARE_SHEET_NAME);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(SHARE_SHEET_NAME);
+    sheet.appendRow(SHARE_HEADERS);
+  }
+  return sheet;
+};
+
+const hashShareToken_ = token =>
+  Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
+    .map(byte => ((byte % 256) + 256) % 256)
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+
+const readShareRows_ = () => {
+  const sheet = getShareSheet_();
+  const values = sheet.getDataRange().getValues();
+  return { sheet, values };
+};
+
+const shareCellIso_ = value => {
+  if (!value) {
+    return '';
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
+};
+
+const revokeActiveShareSessions_ = nowIso => {
+  const { sheet, values } = readShareRows_();
+  values.forEach((row, index) => {
+    if (index === 0) {
+      return;
+    }
+    const revokedAt = shareCellIso_(row[3]);
+    const expiresAt = shareCellIso_(row[2]);
+    if (!revokedAt && expiresAt && expiresAt > nowIso) {
+      sheet.getRange(index + 1, 4).setValue(nowIso);
+    }
+  });
+};
+
+const issueShareSession_ = () => {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
+  revokeActiveShareSessions_(nowIso);
+  const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  getShareSheet_().appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
+  return {
+    share_token: token,
+    issued_at: nowIso,
+    expires_at: expiresIso,
+    ttl_seconds: SHARE_TTL_SECONDS,
+  };
+};
+
+const revokeShareSession_ = () => {
+  revokeActiveShareSessions_(new Date().toISOString());
+  return { revoked: true };
+};
+
+const validateShareToken_ = token => {
+  if (!token) {
+    return null;
+  }
+  const hash = hashShareToken_(token);
+  const { sheet, values } = readShareRows_();
+  const nowIso = new Date().toISOString();
+  for (let index = 1; index < values.length; index += 1) {
+    const row = values[index];
+    if (row[0] !== hash) {
+      continue;
+    }
+    if (shareCellIso_(row[3])) {
+      return null;
+    }
+    const expiresAt = shareCellIso_(row[2]);
+    if (!expiresAt || expiresAt <= nowIso) {
+      return null;
+    }
+    sheet.getRange(index + 1, 5).setValue(Number(row[4] || 0) + 1);
+    sheet.getRange(index + 1, 6).setValue(nowIso);
+    return { expires_at: expiresAt };
+  }
+  return null;
+};
+
 // --- Authentication (same scheme as asset-gas) ---
 // Script Properties required:
 //   AVAILABLE_GMAILS: comma-separated emails allowed to read the data
@@ -139,9 +248,23 @@ const createJsonOutput = data => createJsonpOutput(data, null);
 export function doGet(e) {
   const params = (e && e.parameter) || {};
 
+  let shareSession = null;
   try {
     if (!isDebugMode_()) {
-      verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+      if (params.action === 'issue_share' || params.action === 'revoke_share') {
+        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+        return createJsonOutput(
+          params.action === 'issue_share' ? issueShareSession_() : revokeShareSession_()
+        );
+      }
+      if (params.share_token) {
+        shareSession = validateShareToken_(params.share_token);
+        if (!shareSession) {
+          throw new Error('share session expired or invalid');
+        }
+      } else {
+        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+      }
     }
   } catch (error) {
     const message = (error && error.message) || 'unauthorized';
@@ -170,5 +293,8 @@ export function doGet(e) {
       data[name] = sheetValuesToObjects(sheet.getDataRange().getValues());
     }
   });
+  if (shareSession) {
+    data._share = { expires_at: shareSession.expires_at };
+  }
   return createJsonpOutput(data, params.callback);
 }
