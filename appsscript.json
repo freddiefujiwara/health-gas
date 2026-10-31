@@ -2,7 +2,8 @@
   "dependencies": {},
   "exceptionLogging": "STACKDRIVER",
   "oauthScopes": [
-    "https://www.googleapis.com/auth/spreadsheets"
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/script.external_request"
   ],
   "runtimeVersion": "V8",
   "timeZone": "Asia/Tokyo",
