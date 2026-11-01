@@ -25,7 +25,8 @@ const getSpreadsheet = () => SpreadsheetApp.openById(SPREADSHEET_ID);
 // an audit log. This sheet is NOT part of SHEET_NAMES and is never exposed.
 
 const SHARE_SHEET_NAME = 'share_sessions';
-const SHARE_TTL_SECONDS = 1800;
+// One month, so the owner can hand the doctor a link well before a visit.
+const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const SHARE_HEADERS = [
   'token_hash',
   'issued_at',
