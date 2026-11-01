@@ -245,14 +245,14 @@ describe("doGet share sessions", () => {
     expect(lastJson()).toEqual({ status: 401, error: "missing id token" });
   });
 
-  it("issues a 30-minute share session and stores only its hash", () => {
+  it("issues a 30-day share session and stores only its hash", () => {
     const before = Date.now();
     doGet({ parameter: { action: "issue_share", id_token: "good-token" } });
     const result = lastJson();
-    expect(result.ttl_seconds).toBe(1800);
+    expect(result.ttl_seconds).toBe(30 * 24 * 60 * 60);
     expect(result.share_token).toMatch(/^[0-9a-f]{64}$/);
-    expect(Date.parse(result.expires_at) - before).toBeGreaterThan(29 * 60 * 1000);
-    expect(Date.parse(result.expires_at) - before).toBeLessThanOrEqual(30 * 60 * 1000 + 5000);
+    expect(Date.parse(result.expires_at) - before).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
+    expect(Date.parse(result.expires_at) - before).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000 + 5000);
     expect(shareValues).toHaveLength(2);
     expect(shareValues[1][0]).toBe(shareHashOf(result.share_token));
     expect(shareValues[1][0]).not.toBe(result.share_token);
