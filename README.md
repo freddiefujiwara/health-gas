@@ -2,7 +2,7 @@
 
 This is a Google Apps Script project that provides a read-only web API for the
 health data stored in the "health" Google Sheet (Karasapo nutrition records,
-TANITA body composition, steps from Apple Health, and Mounjaro medication
+TANITA body composition, steps from Apple Health, and medication
 records).
 
 ## Features
