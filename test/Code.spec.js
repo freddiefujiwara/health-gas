@@ -336,3 +336,23 @@ describe("doGet share sessions", () => {
     expect(lastJson()).toEqual({ status: 401, error: "share session expired or invalid" });
   });
 });
+
+describe("staging spreadsheet override", () => {
+  it("opens the SPREADSHEET_ID script property when set", () => {
+    scriptProperties.DEBUG = "true";
+    scriptProperties.SPREADSHEET_ID = "staging-file-id";
+    SpreadsheetApp.openById.mockClear();
+    doGet({ parameter: { sheet: "steps" } });
+    expect(SpreadsheetApp.openById).toHaveBeenCalledWith("staging-file-id");
+    delete scriptProperties.SPREADSHEET_ID;
+  });
+
+  it("falls back to the built-in spreadsheet id when the property is unset", () => {
+    scriptProperties.DEBUG = "true";
+    SpreadsheetApp.openById.mockClear();
+    doGet({ parameter: { sheet: "steps" } });
+    expect(SpreadsheetApp.openById).toHaveBeenCalledWith(
+      "1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A"
+    );
+  });
+});
