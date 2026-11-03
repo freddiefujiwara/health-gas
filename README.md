@@ -71,3 +71,10 @@ This project uses Node.js and npm for local testing and building.
     This command uses `clasp` to upload the contents of the `dist/` folder to
     your Google Apps Script project. You must have `clasp` installed and
     configured for this to work.
+
+## Staging
+
+Setting the `SPREADSHEET_ID` script property makes the web app open that
+spreadsheet instead of the built-in production one. The staging project
+(`health-gas-staging`) uses this to serve a dummy-data copy; production
+leaves the property unset.

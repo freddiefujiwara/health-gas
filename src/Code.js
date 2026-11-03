@@ -1,5 +1,10 @@
 const SPREADSHEET_ID = '1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A';
 
+// Environment separation (staging): when the SPREADSHEET_ID script
+// property is set, it wins over the built-in production ID above, so a
+// standalone staging project can serve a dummy-data copy of the
+// spreadsheet. When the property is unset, behavior is unchanged.
+
 // Sheets exposed by the API. The first row of each sheet is used as keys.
 const SHEET_NAMES = [
   "overview",
@@ -16,7 +21,8 @@ const SHEET_NAMES = [
   "lab_results",
 ];
 
-const getSpreadsheet = () => SpreadsheetApp.openById(SPREADSHEET_ID);
+const getSpreadsheet = () =>
+  SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID') || SPREADSHEET_ID);
 
 // --- Temporary share sessions (doctor viewing links) ---
 // A logged-in owner can issue a URL token that grants read-only access for
