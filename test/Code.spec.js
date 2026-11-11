@@ -337,6 +337,113 @@ describe("doGet share sessions", () => {
   });
 });
 
+describe("doGet owner sessions", () => {
+  const SESSION_HEADERS = [
+    "token_hash",
+    "issued_at",
+    "expires_at",
+    "revoked_at",
+    "access_count",
+    "last_accessed_at",
+  ];
+
+  let ownerValues = [];
+  const mockOwnerSheet = {
+    getDataRange: vi.fn().mockImplementation(() => ({
+      getValues: vi.fn().mockImplementation(() => ownerValues),
+    })),
+    appendRow: vi.fn().mockImplementation((row) => {
+      ownerValues.push([...row]);
+    }),
+    getRange: vi.fn().mockImplementation((row, col) => ({
+      setValue: vi.fn().mockImplementation((value) => {
+        ownerValues[row - 1][col - 1] = value;
+      }),
+    })),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    uuidCounter = 0;
+    ownerValues = [[...SESSION_HEADERS]];
+    shareValues = [[...SESSION_HEADERS]];
+    mockSpreadsheet.insertSheet.mockReturnValue(mockOwnerSheet);
+    mockSpreadsheet.getSheetByName.mockImplementation((name) => {
+      if (name === "owner_sessions") return mockOwnerSheet;
+      if (name === "share_sessions") return mockShareSheet;
+      return mockSheet;
+    });
+    for (const key of Object.keys(scriptProperties)) {
+      delete scriptProperties[key];
+    }
+    Object.assign(scriptProperties, {
+      AVAILABLE_GMAILS: "zegenvs@gmail.com",
+      GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+    });
+    global.UrlFetchApp.fetch.mockImplementation(() => ({
+      getResponseCode: vi.fn().mockReturnValue(200),
+      getContentText: vi.fn().mockReturnValue(JSON.stringify(tokenInfoPayload)),
+    }));
+  });
+
+  const lastJson = () => JSON.parse(mockContentService.setContent.mock.calls.at(-1)[0]);
+  const exchange = () => {
+    doGet({ parameter: { action: "exchange_session", id_token: "good-token" } });
+    return lastJson().session_token;
+  };
+
+  it("requires an ID token to exchange for an owner session", () => {
+    doGet({ parameter: { action: "exchange_session" } });
+    expect(lastJson()).toEqual({ status: 401, error: "missing id token" });
+  });
+
+  it("issues a 30-day owner session and stores only its hash", () => {
+    const token = exchange();
+    const result = lastJson();
+    expect(result.ttl_seconds).toBe(30 * 24 * 60 * 60);
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(ownerValues).toHaveLength(2);
+    expect(ownerValues[1][0]).toBe(shareHashOf(token));
+    expect(ownerValues[1][0]).not.toBe(token);
+  });
+
+  it("serves data with a valid owner session token", () => {
+    const token = exchange();
+    doGet({ parameter: { session_token: token, sheet: "steps" } });
+    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+    expect(ownerValues[1][4]).toBe(1);
+  });
+
+  it("rejects an unknown owner session token", () => {
+    doGet({ parameter: { session_token: "no-such-token" } });
+    expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
+  });
+
+  it("revokes the previous owner session when a new one is exchanged", () => {
+    const first = exchange();
+    const second = exchange();
+    expect(first).not.toBe(second);
+    doGet({ parameter: { session_token: first } });
+    expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
+    doGet({ parameter: { session_token: second, sheet: "steps" } });
+    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+  });
+
+  it("revokes the owner session via the revoke_session action", () => {
+    const token = exchange();
+    doGet({ parameter: { action: "revoke_session", session_token: token } });
+    expect(lastJson()).toEqual({ revoked: true });
+    doGet({ parameter: { session_token: token } });
+    expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
+  });
+
+  it("accepts an owner session as proof for issuing a share link", () => {
+    const token = exchange();
+    doGet({ parameter: { action: "issue_share", session_token: token } });
+    expect(lastJson().share_token).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
 describe("staging spreadsheet override", () => {
   it("opens the SPREADSHEET_ID script property when set", () => {
     scriptProperties.DEBUG = "true";

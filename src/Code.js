@@ -42,15 +42,17 @@ const SHARE_HEADERS = [
   'last_accessed_at',
 ];
 
-const getShareSheet_ = () => {
+const getSessionSheet_ = sheetName => {
   const spreadsheet = getSpreadsheet();
-  let sheet = spreadsheet.getSheetByName(SHARE_SHEET_NAME);
+  let sheet = spreadsheet.getSheetByName(sheetName);
   if (!sheet) {
-    sheet = spreadsheet.insertSheet(SHARE_SHEET_NAME);
+    sheet = spreadsheet.insertSheet(sheetName);
     sheet.appendRow(SHARE_HEADERS);
   }
   return sheet;
 };
+
+const getShareSheet_ = () => getSessionSheet_(SHARE_SHEET_NAME);
 
 const hashShareToken_ = token =>
   Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
@@ -58,11 +60,13 @@ const hashShareToken_ = token =>
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
 
-const readShareRows_ = () => {
-  const sheet = getShareSheet_();
+const readSessionRows_ = sheetName => {
+  const sheet = getSessionSheet_(sheetName);
   const values = sheet.getDataRange().getValues();
   return { sheet, values };
 };
+
+const readShareRows_ = () => readSessionRows_(SHARE_SHEET_NAME);
 
 const shareCellIso_ = value => {
   if (!value) {
@@ -74,8 +78,8 @@ const shareCellIso_ = value => {
   return String(value);
 };
 
-const revokeActiveShareSessions_ = nowIso => {
-  const { sheet, values } = readShareRows_();
+const revokeActiveSessions_ = (sheetName, nowIso) => {
+  const { sheet, values } = readSessionRows_(sheetName);
   values.forEach((row, index) => {
     if (index === 0) {
       return;
@@ -88,32 +92,37 @@ const revokeActiveShareSessions_ = nowIso => {
   });
 };
 
-const issueShareSession_ = () => {
+const revokeActiveShareSessions_ = nowIso =>
+  revokeActiveSessions_(SHARE_SHEET_NAME, nowIso);
+
+const issueSession_ = (sheetName, tokenKey) => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
-  revokeActiveShareSessions_(nowIso);
+  revokeActiveSessions_(sheetName, nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
-  getShareSheet_().appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
+  getSessionSheet_(sheetName).appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
   return {
-    share_token: token,
+    [tokenKey]: token,
     issued_at: nowIso,
     expires_at: expiresIso,
     ttl_seconds: SHARE_TTL_SECONDS,
   };
 };
 
+const issueShareSession_ = () => issueSession_(SHARE_SHEET_NAME, 'share_token');
+
 const revokeShareSession_ = () => {
   revokeActiveShareSessions_(new Date().toISOString());
   return { revoked: true };
 };
 
-const validateShareToken_ = token => {
+const validateSessionToken_ = (sheetName, token) => {
   if (!token) {
     return null;
   }
   const hash = hashShareToken_(token);
-  const { sheet, values } = readShareRows_();
+  const { sheet, values } = readSessionRows_(sheetName);
   const nowIso = new Date().toISOString();
   for (let index = 1; index < values.length; index += 1) {
     const row = values[index];
@@ -132,6 +141,36 @@ const validateShareToken_ = token => {
     return { expires_at: expiresAt };
   }
   return null;
+};
+
+const validateShareToken_ = token => validateSessionToken_(SHARE_SHEET_NAME, token);
+
+// --- Owner sessions (long-lived sign-in) ---
+// Google ID tokens expire after about an hour, which used to drop the
+// owner back at the sign-in gate. After a Google sign-in the frontend
+// exchanges the ID token for one of these 30-day owner sessions (same
+// storage scheme as share sessions, separate sheet) and uses it for all
+// later calls. Issuing a new one revokes the previous ones, and the
+// frontend revokes its session on logout.
+
+const OWNER_SHEET_NAME = 'owner_sessions';
+
+const issueOwnerSession_ = () => issueSession_(OWNER_SHEET_NAME, 'session_token');
+
+const validateOwnerToken_ = token => validateSessionToken_(OWNER_SHEET_NAME, token);
+
+const revokeOwnerSession_ = token => {
+  if (token) {
+    const hash = hashShareToken_(token);
+    const { sheet, values } = readSessionRows_(OWNER_SHEET_NAME);
+    const nowIso = new Date().toISOString();
+    values.forEach((row, index) => {
+      if (index > 0 && row[0] === hash && !shareCellIso_(row[3])) {
+        sheet.getRange(index + 1, 4).setValue(nowIso);
+      }
+    });
+  }
+  return { revoked: true };
 };
 
 // --- Authentication (same scheme as asset-gas) ---
@@ -217,6 +256,16 @@ const verifyGoogleIdTokenOrThrow_ = idToken => {
 };
 
 
+// Owner proof for owner-only actions: a valid Google ID token, or a
+// live owner session token (the post-sign-in steady state).
+const requireOwnerAuth_ = e => {
+  const params = (e && e.parameter) || {};
+  if (params.session_token && validateOwnerToken_(params.session_token)) {
+    return;
+  }
+  verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+};
+
 const getSheet = name => getSpreadsheet().getSheetByName(name);
 
 // Helper to convert 2D array from a sheet to an array of objects
@@ -258,13 +307,24 @@ export function doGet(e) {
   let shareSession = null;
   try {
     if (!isDebugMode_()) {
-      if (params.action === 'issue_share' || params.action === 'revoke_share') {
+      if (params.action === 'exchange_session') {
         verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+        return createJsonOutput(issueOwnerSession_());
+      }
+      if (params.action === 'revoke_session') {
+        return createJsonOutput(revokeOwnerSession_(params.session_token || ''));
+      }
+      if (params.action === 'issue_share' || params.action === 'revoke_share') {
+        requireOwnerAuth_(e);
         return createJsonOutput(
           params.action === 'issue_share' ? issueShareSession_() : revokeShareSession_()
         );
       }
-      if (params.share_token) {
+      if (params.session_token) {
+        if (!validateOwnerToken_(params.session_token)) {
+          throw new Error('session expired or invalid');
+        }
+      } else if (params.share_token) {
         shareSession = validateShareToken_(params.share_token);
         if (!shareSession) {
           throw new Error('share session expired or invalid');
