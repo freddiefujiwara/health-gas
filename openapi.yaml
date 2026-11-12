@@ -40,6 +40,7 @@ paths:
               - lab_results
               - chat_activity
               - chat_activity_hours
+              - chat_activity_daily_hours
           description: Name of a single sheet to return.
         - in: query
           name: callback
