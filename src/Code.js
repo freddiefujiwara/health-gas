@@ -21,6 +21,7 @@ const SHEET_NAMES = [
   "lab_results",
   "chat_activity",
   "chat_activity_hours",
+  "chat_activity_daily_hours",
 ];
 
 const getSpreadsheet = () =>
