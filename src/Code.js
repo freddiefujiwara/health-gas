@@ -20,6 +20,7 @@ const SHEET_NAMES = [
   "data_dictionary",
   "lab_results",
   "chat_activity",
+  "chat_activity_hours",
 ];
 
 const getSpreadsheet = () =>
