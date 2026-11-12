@@ -39,6 +39,7 @@ paths:
               - data_dictionary
               - lab_results
               - chat_activity
+              - chat_activity_hours
           description: Name of a single sheet to return.
         - in: query
           name: callback
