@@ -286,6 +286,55 @@ const sheetValuesToObjects = values => {
     );
 };
 
+// --- Sheet read cache (CacheService) ---
+// Reading every sheet from the spreadsheet takes several seconds, while
+// the data changes only a few times a day. Converted rows are cached as
+// JSON for a few minutes; values are chunked because CacheService caps a
+// single value at 100KB. The cache is best-effort: any failure falls back
+// to a direct sheet read.
+const SHEET_CACHE_TTL_SECONDS = 300;
+const SHEET_CACHE_CHUNK_SIZE = 90000;
+
+const readSheetObjects_ = name => {
+  const cacheKey = `sheetcache:${name}`;
+  try {
+    const cache = CacheService.getScriptCache();
+    const count = Number(cache.get(`${cacheKey}:count`) || 0);
+    if (count > 0) {
+      const keys = [];
+      for (let i = 0; i < count; i += 1) {
+        keys.push(`${cacheKey}:${i}`);
+      }
+      const chunks = cache.getAll(keys);
+      const joined = keys.map(key => chunks[key] || '').join('');
+      if (joined) {
+        return JSON.parse(joined);
+      }
+    }
+  } catch (error) {
+    // Cache unavailable or stale chunks: read the sheet directly.
+  }
+  const sheet = getSheet(name);
+  if (!sheet) {
+    return null;
+  }
+  const objects = sheetValuesToObjects(sheet.getDataRange().getValues());
+  try {
+    const json = JSON.stringify(objects);
+    const entries = {};
+    let count = 0;
+    for (let i = 0; i < json.length; i += SHEET_CACHE_CHUNK_SIZE) {
+      entries[`${cacheKey}:${count}`] = json.slice(i, i + SHEET_CACHE_CHUNK_SIZE);
+      count += 1;
+    }
+    entries[`${cacheKey}:count`] = String(count);
+    CacheService.getScriptCache().putAll(entries, SHEET_CACHE_TTL_SECONDS);
+  } catch (error) {
+    // Cache is best-effort.
+  }
+  return objects;
+};
+
 // Helper to create the final output for doGet
 const createJsonpOutput = (data, callback) => {
   const output = ContentService.createTextOutput();
@@ -343,21 +392,18 @@ export function doGet(e) {
     if (!SHEET_NAMES.includes(params.sheet)) {
       return createJsonOutput({ error: 'sheet_not_found', sheet: params.sheet });
     }
-    const sheet = getSheet(params.sheet);
-    if (!sheet) {
+    const objects = readSheetObjects_(params.sheet);
+    if (!objects) {
       return createJsonOutput({ error: 'sheet_not_found', sheet: params.sheet });
     }
-    return createJsonpOutput(
-      sheetValuesToObjects(sheet.getDataRange().getValues()),
-      params.callback
-    );
+    return createJsonpOutput(objects, params.callback);
   }
 
   const data = {};
   SHEET_NAMES.forEach(name => {
-    const sheet = getSheet(name);
-    if (sheet) {
-      data[name] = sheetValuesToObjects(sheet.getDataRange().getValues());
+    const objects = readSheetObjects_(name);
+    if (objects) {
+      data[name] = objects;
     }
   });
   if (shareSession) {
