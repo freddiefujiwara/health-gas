@@ -52,8 +52,6 @@ const getSessionSheet_ = sheetName => {
   return sheet;
 };
 
-const getShareSheet_ = () => getSessionSheet_(SHARE_SHEET_NAME);
-
 const hashShareToken_ = token =>
   Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
     .map(byte => ((byte % 256) + 256) % 256)
@@ -65,8 +63,6 @@ const readSessionRows_ = sheetName => {
   const values = sheet.getDataRange().getValues();
   return { sheet, values };
 };
-
-const readShareRows_ = () => readSessionRows_(SHARE_SHEET_NAME);
 
 const shareCellIso_ = value => {
   if (!value) {
