@@ -1,10 +1,5 @@
 const SPREADSHEET_ID = '1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A';
 
-// Environment separation (staging): when the SPREADSHEET_ID script
-// property is set, it wins over the built-in production ID above, so a
-// standalone staging project can serve a dummy-data copy of the
-// spreadsheet. When the property is unset, behavior is unchanged.
-
 // Sheets exposed by the API. The first row of each sheet is used as keys.
 const SHEET_NAMES = [
   "overview",
@@ -19,10 +14,10 @@ const SHEET_NAMES = [
   "goals_settings",
   "data_dictionary",
   "lab_results",
+  "chat_activity",
 ];
 
-const getSpreadsheet = () =>
-  SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID') || SPREADSHEET_ID);
+const getSpreadsheet = () => SpreadsheetApp.openById(SPREADSHEET_ID);
 
 // --- Temporary share sessions (doctor viewing links) ---
 // A logged-in owner can issue a URL token that grants read-only access for
@@ -42,11 +37,11 @@ const SHARE_HEADERS = [
   'last_accessed_at',
 ];
 
-const getSessionSheet_ = sheetName => {
+const getShareSheet_ = () => {
   const spreadsheet = getSpreadsheet();
-  let sheet = spreadsheet.getSheetByName(sheetName);
+  let sheet = spreadsheet.getSheetByName(SHARE_SHEET_NAME);
   if (!sheet) {
-    sheet = spreadsheet.insertSheet(sheetName);
+    sheet = spreadsheet.insertSheet(SHARE_SHEET_NAME);
     sheet.appendRow(SHARE_HEADERS);
   }
   return sheet;
@@ -58,8 +53,8 @@ const hashShareToken_ = token =>
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
 
-const readSessionRows_ = sheetName => {
-  const sheet = getSessionSheet_(sheetName);
+const readShareRows_ = () => {
+  const sheet = getShareSheet_();
   const values = sheet.getDataRange().getValues();
   return { sheet, values };
 };
@@ -74,8 +69,8 @@ const shareCellIso_ = value => {
   return String(value);
 };
 
-const revokeActiveSessions_ = (sheetName, nowIso) => {
-  const { sheet, values } = readSessionRows_(sheetName);
+const revokeActiveShareSessions_ = nowIso => {
+  const { sheet, values } = readShareRows_();
   values.forEach((row, index) => {
     if (index === 0) {
       return;
@@ -88,37 +83,32 @@ const revokeActiveSessions_ = (sheetName, nowIso) => {
   });
 };
 
-const revokeActiveShareSessions_ = nowIso =>
-  revokeActiveSessions_(SHARE_SHEET_NAME, nowIso);
-
-const issueSession_ = (sheetName, tokenKey) => {
+const issueShareSession_ = () => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
-  revokeActiveSessions_(sheetName, nowIso);
+  revokeActiveShareSessions_(nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
-  getSessionSheet_(sheetName).appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
+  getShareSheet_().appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
   return {
-    [tokenKey]: token,
+    share_token: token,
     issued_at: nowIso,
     expires_at: expiresIso,
     ttl_seconds: SHARE_TTL_SECONDS,
   };
 };
 
-const issueShareSession_ = () => issueSession_(SHARE_SHEET_NAME, 'share_token');
-
 const revokeShareSession_ = () => {
   revokeActiveShareSessions_(new Date().toISOString());
   return { revoked: true };
 };
 
-const validateSessionToken_ = (sheetName, token) => {
+const validateShareToken_ = token => {
   if (!token) {
     return null;
   }
   const hash = hashShareToken_(token);
-  const { sheet, values } = readSessionRows_(sheetName);
+  const { sheet, values } = readShareRows_();
   const nowIso = new Date().toISOString();
   for (let index = 1; index < values.length; index += 1) {
     const row = values[index];
@@ -137,36 +127,6 @@ const validateSessionToken_ = (sheetName, token) => {
     return { expires_at: expiresAt };
   }
   return null;
-};
-
-const validateShareToken_ = token => validateSessionToken_(SHARE_SHEET_NAME, token);
-
-// --- Owner sessions (long-lived sign-in) ---
-// Google ID tokens expire after about an hour, which used to drop the
-// owner back at the sign-in gate. After a Google sign-in the frontend
-// exchanges the ID token for one of these 30-day owner sessions (same
-// storage scheme as share sessions, separate sheet) and uses it for all
-// later calls. Issuing a new one revokes the previous ones, and the
-// frontend revokes its session on logout.
-
-const OWNER_SHEET_NAME = 'owner_sessions';
-
-const issueOwnerSession_ = () => issueSession_(OWNER_SHEET_NAME, 'session_token');
-
-const validateOwnerToken_ = token => validateSessionToken_(OWNER_SHEET_NAME, token);
-
-const revokeOwnerSession_ = token => {
-  if (token) {
-    const hash = hashShareToken_(token);
-    const { sheet, values } = readSessionRows_(OWNER_SHEET_NAME);
-    const nowIso = new Date().toISOString();
-    values.forEach((row, index) => {
-      if (index > 0 && row[0] === hash && !shareCellIso_(row[3])) {
-        sheet.getRange(index + 1, 4).setValue(nowIso);
-      }
-    });
-  }
-  return { revoked: true };
 };
 
 // --- Authentication (same scheme as asset-gas) ---
@@ -252,16 +212,6 @@ const verifyGoogleIdTokenOrThrow_ = idToken => {
 };
 
 
-// Owner proof for owner-only actions: a valid Google ID token, or a
-// live owner session token (the post-sign-in steady state).
-const requireOwnerAuth_ = e => {
-  const params = (e && e.parameter) || {};
-  if (params.session_token && validateOwnerToken_(params.session_token)) {
-    return;
-  }
-  verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
-};
-
 const getSheet = name => getSpreadsheet().getSheetByName(name);
 
 // Helper to convert 2D array from a sheet to an array of objects
@@ -303,24 +253,13 @@ export function doGet(e) {
   let shareSession = null;
   try {
     if (!isDebugMode_()) {
-      if (params.action === 'exchange_session') {
-        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
-        return createJsonOutput(issueOwnerSession_());
-      }
-      if (params.action === 'revoke_session') {
-        return createJsonOutput(revokeOwnerSession_(params.session_token || ''));
-      }
       if (params.action === 'issue_share' || params.action === 'revoke_share') {
-        requireOwnerAuth_(e);
+        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
         return createJsonOutput(
           params.action === 'issue_share' ? issueShareSession_() : revokeShareSession_()
         );
       }
-      if (params.session_token) {
-        if (!validateOwnerToken_(params.session_token)) {
-          throw new Error('session expired or invalid');
-        }
-      } else if (params.share_token) {
+      if (params.share_token) {
         shareSession = validateShareToken_(params.share_token);
         if (!shareSession) {
           throw new Error('share session expired or invalid');
