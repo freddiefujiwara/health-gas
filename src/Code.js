@@ -19,6 +19,7 @@ const SHEET_NAMES = [
   "goals_settings",
   "data_dictionary",
   "lab_results",
+  "chat_activity",
 ];
 
 const getSpreadsheet = () =>
