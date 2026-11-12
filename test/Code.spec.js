@@ -126,6 +126,36 @@ describe("doGet", () => {
     });
   });
 
+  it("should return sheet_not_found when a known sheet is missing from the spreadsheet", () => {
+    mockSpreadsheet.getSheetByName.mockReturnValue(null);
+    const e = { parameter: { sheet: "steps" } };
+    doGet(e);
+    const content = mockContentService.setContent.mock.calls[0][0];
+    expect(JSON.parse(content)).toEqual({
+      error: "sheet_not_found",
+      sheet: "steps",
+    });
+  });
+
+  it("should format Date cells with Utilities.formatDate", () => {
+    const cellDate = new Date("2026-08-23T00:00:00.000Z");
+    mockRange.getValues.mockReturnValueOnce([
+      ["date", "steps"],
+      [cellDate, 6148],
+    ]);
+    const e = { parameter: { sheet: "steps" } };
+    doGet(e);
+    const content = mockContentService.setContent.mock.calls[0][0];
+    expect(JSON.parse(content)).toEqual([
+      { date: "2026-08-23T00:00:00+09:00", steps: 6148 },
+    ]);
+    expect(global.Utilities.formatDate).toHaveBeenCalledWith(
+      cellDate,
+      "Asia/Tokyo",
+      "yyyy-MM-dd'T'HH:mm:ssXXX"
+    );
+  });
+
   it("should return JSONP when a callback is provided", () => {
     const e = { parameter: { sheet: "steps", callback: "myCallback" } };
     doGet(e);
@@ -194,6 +224,120 @@ describe("doGet authentication", () => {
     }));
     doGet({ parameter: { id_token: "bad-token" } });
     expect(lastJson()).toEqual({ status: 401, error: "token verification failed" });
+  });
+
+  const rejectWithPayload = (overrides) => {
+    global.UrlFetchApp.fetch.mockImplementation(() => ({
+      getResponseCode: vi.fn().mockReturnValue(200),
+      getContentText: vi.fn().mockReturnValue(
+        JSON.stringify({ ...tokenInfoPayload, ...overrides })
+      ),
+    }));
+    doGet({ parameter: { id_token: "good-token" } });
+    return lastJson();
+  };
+
+  it("rejects a token with an invalid issuer", () => {
+    expect(rejectWithPayload({ iss: "https://example.com" })).toEqual({
+      status: 401,
+      error: "invalid iss",
+    });
+  });
+
+  it("rejects a token with an invalid audience", () => {
+    expect(rejectWithPayload({ aud: "other-client-id" })).toEqual({
+      status: 401,
+      error: "invalid aud",
+    });
+  });
+
+  it("rejects an expired token", () => {
+    const past = String(Math.floor(Date.now() / 1000) - 60);
+    expect(rejectWithPayload({ exp: past })).toEqual({
+      status: 401,
+      error: "token expired",
+    });
+  });
+
+  it("rejects a token without an expiry", () => {
+    expect(rejectWithPayload({ exp: undefined })).toEqual({
+      status: 401,
+      error: "token expired",
+    });
+  });
+
+  it("rejects a token with a non-numeric expiry", () => {
+    expect(rejectWithPayload({ exp: "not-a-number" })).toEqual({
+      status: 401,
+      error: "token expired",
+    });
+  });
+
+  it("rejects a token whose email is not verified", () => {
+    expect(rejectWithPayload({ email_verified: "false" })).toEqual({
+      status: 401,
+      error: "email not verified",
+    });
+  });
+
+  it("rejects a token without an email", () => {
+    expect(rejectWithPayload({ email: "" })).toEqual({
+      status: 401,
+      error: "missing email",
+    });
+  });
+
+  it("rejects when GOOGLE_OAUTH_CLIENT_ID is not configured", () => {
+    delete scriptProperties.GOOGLE_OAUTH_CLIENT_ID;
+    doGet({ parameter: { id_token: "good-token" } });
+    expect(lastJson()).toEqual({
+      status: 401,
+      error: "missing GOOGLE_OAUTH_CLIENT_ID",
+    });
+    expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects when PropertiesService is unavailable", () => {
+    const original = global.PropertiesService;
+    global.PropertiesService = undefined;
+    try {
+      doGet({ parameter: { id_token: "good-token" } });
+      expect(lastJson()).toEqual({
+        status: 401,
+        error: "missing GOOGLE_OAUTH_CLIENT_ID",
+      });
+    } finally {
+      global.PropertiesService = original;
+    }
+  });
+
+  it("rejects when PropertiesService has no script properties store", () => {
+    const original = global.PropertiesService;
+    global.PropertiesService = {};
+    try {
+      doGet({ parameter: { id_token: "good-token" } });
+      expect(lastJson()).toEqual({
+        status: 401,
+        error: "missing GOOGLE_OAUTH_CLIENT_ID",
+      });
+    } finally {
+      global.PropertiesService = original;
+    }
+  });
+
+  it("accepts the bare issuer spelling and a boolean verified flag", () => {
+    global.UrlFetchApp.fetch.mockImplementation(() => ({
+      getResponseCode: vi.fn().mockReturnValue(200),
+      getContentText: vi.fn().mockReturnValue(
+        JSON.stringify({
+          ...tokenInfoPayload,
+          iss: "accounts.google.com",
+          email_verified: true,
+        })
+      ),
+    }));
+    doGet({ parameter: { id_token: "good-token", sheet: "steps" } });
+    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
   it("skips authentication when DEBUG is true", () => {
@@ -293,6 +437,24 @@ describe("doGet share sessions", () => {
     expect(data._share.expires_at).toBe(shareValues[1][2]);
     expect(shareValues[1][4]).toBe(1);
     expect(shareValues[1][5]).not.toBe("");
+  });
+
+  it("serves data when the stored session dates are Date objects", () => {
+    const token = "date-cells-token";
+    const expiresAt = new Date(Date.now() + 1800_000);
+    shareValues.push([
+      shareHashOf(token),
+      new Date(Date.now() - 1000),
+      expiresAt,
+      "",
+      0,
+      "",
+    ]);
+    doGet({ parameter: { share_token: token } });
+    const data = lastJson();
+    expect(data.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+    expect(data._share.expires_at).toBe(expiresAt.toISOString());
+    expect(shareValues[1][4]).toBe(1);
   });
 
   it("rejects an expired share token", () => {
