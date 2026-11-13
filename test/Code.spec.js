@@ -592,12 +592,12 @@ describe("doGet owner sessions", () => {
     expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
   });
 
-  it("revokes the previous owner session when a new one is exchanged", () => {
+  it("keeps previous owner sessions valid when a new one is exchanged", () => {
     const first = exchange();
     const second = exchange();
     expect(first).not.toBe(second);
-    doGet({ parameter: { session_token: first } });
-    expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
+    doGet({ parameter: { session_token: first, sheet: "steps" } });
+    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
     doGet({ parameter: { session_token: second, sheet: "steps" } });
     expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
