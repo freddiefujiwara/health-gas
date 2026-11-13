@@ -64,33 +64,17 @@ const mockShareSheet = {
   })),
 };
 mockSpreadsheet.insertSheet = vi.fn().mockReturnValue(mockShareSheet);
-// In-memory CacheService backing store
-const cacheStore = new Map();
-global.CacheService = {
-  getScriptCache: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockImplementation((key) => (cacheStore.has(key) ? cacheStore.get(key) : null)),
-    getAll: vi.fn().mockImplementation((keys) => {
-      const out = {};
-      keys.forEach((key) => {
-        if (cacheStore.has(key)) {
-          out[key] = cacheStore.get(key);
-        }
-      });
-      return out;
-    }),
-    putAll: vi.fn().mockImplementation((entries) => {
-      Object.entries(entries).forEach(([k, v]) => cacheStore.set(k, v));
-    }),
-  })),
-};
-
 global.Logger = {
   log: vi.fn(),
 };
 
-// Script Properties: DEBUG=true by default so the data tests run without auth,
-// mirroring how asset-gas is operated for checks.
-const scriptProperties = { DEBUG: "true" };
+// Script Properties: authentication is always on, so the allowed account is
+// configured by default and the data tests authenticate with the mocked ID
+// token (see authedEvent below).
+const scriptProperties = {
+  AVAILABLE_GMAILS: "zegenvs@gmail.com",
+  GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+};
 global.PropertiesService = {
   getScriptProperties: vi.fn().mockImplementation(() => ({
     getProperty: vi.fn().mockImplementation((key) => scriptProperties[key] ?? null),
@@ -112,16 +96,20 @@ global.UrlFetchApp = {
   })),
 };
 
+// Event carrying the mocked valid ID token, for tests that exercise the
+// data endpoints rather than the authentication itself.
+const authedEvent = (parameter = {}) => ({
+  parameter: { ...parameter, id_token: "good-token" },
+});
+
 describe("doGet", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cacheStore.clear();
     mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
   });
 
   it("should return all sheets as JSON when no parameter is provided", () => {
-    const e = { parameter: {} };
-    doGet(e);
+    doGet(authedEvent());
     expect(mockContentService.setMimeType).toHaveBeenCalledWith("JSON");
     const content = mockContentService.setContent.mock.calls[0][0];
     const data = JSON.parse(content);
@@ -130,16 +118,14 @@ describe("doGet", () => {
   });
 
   it("should return a single sheet when sheet parameter is provided", () => {
-    const e = { parameter: { sheet: "steps" } };
-    doGet(e);
+    doGet(authedEvent({ sheet: "steps" }));
     const content = mockContentService.setContent.mock.calls[0][0];
     expect(JSON.parse(content)).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
   it("should return an error when the sheet does not exist", () => {
     mockSpreadsheet.getSheetByName.mockReturnValue(null);
-    const e = { parameter: { sheet: "unknown" } };
-    doGet(e);
+    doGet(authedEvent({ sheet: "unknown" }));
     const content = mockContentService.setContent.mock.calls[0][0];
     expect(JSON.parse(content)).toEqual({
       error: "sheet_not_found",
@@ -149,8 +135,7 @@ describe("doGet", () => {
 
   it("should return sheet_not_found when a known sheet is missing from the spreadsheet", () => {
     mockSpreadsheet.getSheetByName.mockReturnValue(null);
-    const e = { parameter: { sheet: "steps" } };
-    doGet(e);
+    doGet(authedEvent({ sheet: "steps" }));
     const content = mockContentService.setContent.mock.calls[0][0];
     expect(JSON.parse(content)).toEqual({
       error: "sheet_not_found",
@@ -164,8 +149,7 @@ describe("doGet", () => {
       ["date", "steps"],
       [cellDate, 6148],
     ]);
-    const e = { parameter: { sheet: "steps" } };
-    doGet(e);
+    doGet(authedEvent({ sheet: "steps" }));
     const content = mockContentService.setContent.mock.calls[0][0];
     expect(JSON.parse(content)).toEqual([
       { date: "2026-08-23T00:00:00+09:00", steps: 6148 },
@@ -178,8 +162,7 @@ describe("doGet", () => {
   });
 
   it("should return JSONP when a callback is provided", () => {
-    const e = { parameter: { sheet: "steps", callback: "myCallback" } };
-    doGet(e);
+    doGet(authedEvent({ sheet: "steps", callback: "myCallback" }));
     expect(mockContentService.setMimeType).toHaveBeenCalledWith("JAVASCRIPT");
     expect(mockContentService.setContent).toHaveBeenCalledWith(
       "myCallback&&myCallback(" +
@@ -187,12 +170,19 @@ describe("doGet", () => {
         ");"
     );
   });
+
+  it("should fall back to JSON for a callback that is not a plain identifier", () => {
+    doGet(authedEvent({ sheet: "steps", callback: "alert(1)//" }));
+    expect(mockContentService.setMimeType).toHaveBeenCalledWith("JSON");
+    expect(mockContentService.setContent).toHaveBeenCalledWith(
+      JSON.stringify([{ date: "2026-08-23", steps: 6148 }])
+    );
+  });
 });
 
 describe("doGet authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cacheStore.clear();
     mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
     for (const key of Object.keys(scriptProperties)) {
       delete scriptProperties[key];
@@ -362,11 +352,10 @@ describe("doGet authentication", () => {
     expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
-  it("skips authentication when DEBUG is true", () => {
+  it("does not skip authentication when DEBUG is true", () => {
     scriptProperties.DEBUG = "true";
     doGet({ parameter: { sheet: "steps" } });
-    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
-    expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+    expect(lastJson()).toEqual({ status: 401, error: "missing id token" });
   });
 });
 
@@ -382,7 +371,6 @@ describe("doGet share sessions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cacheStore.clear();
     uuidCounter = 0;
     shareValues = [[...SHARE_HEADERS]];
     mockSpreadsheet.getSheetByName.mockImplementation((name) =>
@@ -549,7 +537,6 @@ describe("doGet owner sessions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cacheStore.clear();
     uuidCounter = 0;
     ownerValues = [[...SESSION_HEADERS]];
     shareValues = [[...SESSION_HEADERS]];
@@ -605,12 +592,12 @@ describe("doGet owner sessions", () => {
     expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
   });
 
-  it("keeps previous owner sessions valid when a new one is exchanged", () => {
+  it("revokes the previous owner session when a new one is exchanged", () => {
     const first = exchange();
     const second = exchange();
     expect(first).not.toBe(second);
-    doGet({ parameter: { session_token: first, sheet: "steps" } });
-    expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+    doGet({ parameter: { session_token: first } });
+    expect(lastJson()).toEqual({ status: 401, error: "session expired or invalid" });
     doGet({ parameter: { session_token: second, sheet: "steps" } });
     expect(lastJson()).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
@@ -631,53 +618,19 @@ describe("doGet owner sessions", () => {
 });
 
 describe("staging spreadsheet override", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    cacheStore.clear();
-    mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
-  });
-
   it("opens the SPREADSHEET_ID script property when set", () => {
-    scriptProperties.DEBUG = "true";
     scriptProperties.SPREADSHEET_ID = "staging-file-id";
     SpreadsheetApp.openById.mockClear();
-    doGet({ parameter: { sheet: "steps" } });
+    doGet(authedEvent({ sheet: "steps" }));
     expect(SpreadsheetApp.openById).toHaveBeenCalledWith("staging-file-id");
     delete scriptProperties.SPREADSHEET_ID;
   });
 
   it("falls back to the built-in spreadsheet id when the property is unset", () => {
-    scriptProperties.DEBUG = "true";
     SpreadsheetApp.openById.mockClear();
-    doGet({ parameter: { sheet: "steps" } });
+    doGet(authedEvent({ sheet: "steps" }));
     expect(SpreadsheetApp.openById).toHaveBeenCalledWith(
       "1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A"
     );
-  });
-});
-
-describe("sheet read cache", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    cacheStore.clear();
-    mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
-    cacheStore.clear();
-  });
-
-  it("reads sheets once and serves the second full request from cache", () => {
-    doGet({ parameter: {} });
-    const callsAfterFirst = mockRange.getValues.mock.calls.length;
-    expect(callsAfterFirst).toBeGreaterThan(0);
-    doGet({ parameter: {} });
-    expect(mockRange.getValues.mock.calls.length).toBe(callsAfterFirst);
-  });
-
-  it("serves a single-sheet request from the cache warmed by a full request", () => {
-    doGet({ parameter: {} });
-    const calls = mockRange.getValues.mock.calls.length;
-    doGet({ parameter: { sheet: "steps" } });
-    expect(mockRange.getValues.mock.calls.length).toBe(calls);
-    const content = mockContentService.setContent.mock.calls.at(-1)[0];
-    expect(JSON.parse(content)).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 });

@@ -14,13 +14,11 @@ const SHEET_NAMES = [
   "period_summaries",
   "body_composition",
   "body_segments",
+  "medication_plan",
+  "medication_log",
   "goals_settings",
   "data_dictionary",
   "lab_results",
-  "chat_activity",
-  "chat_activity_hours",
-  "chat_activity_daily_hours",
-  "sleep_estimates",
 ];
 
 const getSpreadsheet = () =>
@@ -93,13 +91,11 @@ const revokeActiveSessions_ = (sheetName, nowIso) => {
 const revokeActiveShareSessions_ = nowIso =>
   revokeActiveSessions_(SHARE_SHEET_NAME, nowIso);
 
-const issueSession_ = (sheetName, tokenKey, { revokePrevious = true } = {}) => {
+const issueSession_ = (sheetName, tokenKey) => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
-  if (revokePrevious) {
-    revokeActiveSessions_(sheetName, nowIso);
-  }
+  revokeActiveSessions_(sheetName, nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
   getSessionSheet_(sheetName).appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
   return {
@@ -150,15 +146,12 @@ const validateShareToken_ = token => validateSessionToken_(SHARE_SHEET_NAME, tok
 // owner back at the sign-in gate. After a Google sign-in the frontend
 // exchanges the ID token for one of these 30-day owner sessions (same
 // storage scheme as share sessions, separate sheet) and uses it for all
-// later calls. Owner sessions coexist across devices: issuing a new one
-// does NOT revoke the others (unlike share links, where reissuing must
-// invalidate the old link). The frontend revokes its own session on
-// logout.
+// later calls. Issuing a new one revokes the previous ones, and the
+// frontend revokes its session on logout.
 
 const OWNER_SHEET_NAME = 'owner_sessions';
 
-const issueOwnerSession_ = () =>
-  issueSession_(OWNER_SHEET_NAME, 'session_token', { revokePrevious: false });
+const issueOwnerSession_ = () => issueSession_(OWNER_SHEET_NAME, 'session_token');
 
 const validateOwnerToken_ = token => validateSessionToken_(OWNER_SHEET_NAME, token);
 
@@ -180,7 +173,6 @@ const revokeOwnerSession_ = token => {
 // Script Properties required:
 //   AVAILABLE_GMAILS: comma-separated emails allowed to read the data
 //   GOOGLE_OAUTH_CLIENT_ID: OAuth client ID used to verify ID tokens
-//   DEBUG: when "true", authentication is skipped (for local checks only)
 
 const getScriptProperties_ = () => {
   if (typeof PropertiesService === 'undefined' || !PropertiesService.getScriptProperties) {
@@ -196,8 +188,6 @@ const getScriptProperty_ = key => {
   }
   return properties.getProperty(key) || '';
 };
-
-const isDebugMode_ = () => getScriptProperty_('DEBUG') === 'true';
 
 const extractIdToken_ = e => {
   const headers = (e && e.headers) || {};
@@ -289,59 +279,17 @@ const sheetValuesToObjects = values => {
     );
 };
 
-// --- Sheet read cache (CacheService) ---
-// Reading every sheet from the spreadsheet takes several seconds, while
-// the data changes only a few times a day. Converted rows are cached as
-// JSON for a few minutes; values are chunked because CacheService caps a
-// single value at 100KB. The cache is best-effort: any failure falls back
-// to a direct sheet read.
-const SHEET_CACHE_TTL_SECONDS = 300;
-const SHEET_CACHE_CHUNK_SIZE = 90000;
-
-const readSheetObjects_ = name => {
-  const cacheKey = `sheetcache:${name}`;
-  try {
-    const cache = CacheService.getScriptCache();
-    const count = Number(cache.get(`${cacheKey}:count`) || 0);
-    if (count > 0) {
-      const keys = [];
-      for (let i = 0; i < count; i += 1) {
-        keys.push(`${cacheKey}:${i}`);
-      }
-      const chunks = cache.getAll(keys);
-      const joined = keys.map(key => chunks[key] || '').join('');
-      if (joined) {
-        return JSON.parse(joined);
-      }
-    }
-  } catch (error) {
-    // Cache unavailable or stale chunks: read the sheet directly.
-  }
-  const sheet = getSheet(name);
-  if (!sheet) {
-    return null;
-  }
-  const objects = sheetValuesToObjects(sheet.getDataRange().getValues());
-  try {
-    const json = JSON.stringify(objects);
-    const entries = {};
-    let count = 0;
-    for (let i = 0; i < json.length; i += SHEET_CACHE_CHUNK_SIZE) {
-      entries[`${cacheKey}:${count}`] = json.slice(i, i + SHEET_CACHE_CHUNK_SIZE);
-      count += 1;
-    }
-    entries[`${cacheKey}:count`] = String(count);
-    CacheService.getScriptCache().putAll(entries, SHEET_CACHE_TTL_SECONDS);
-  } catch (error) {
-    // Cache is best-effort.
-  }
-  return objects;
-};
+// A JSONP callback must be a plain JavaScript identifier path; anything
+// else would be reflected verbatim into a JavaScript response (the same
+// validation bucket-list-gas applies).
+const isValidCallback_ = callback =>
+  typeof callback === 'string' &&
+  /^[A-Za-z_$][0-9A-Za-z_$]*(\.[A-Za-z_$][0-9A-Za-z_$]*)*$/.test(callback);
 
 // Helper to create the final output for doGet
 const createJsonpOutput = (data, callback) => {
   const output = ContentService.createTextOutput();
-  if (callback) {
+  if (callback && isValidCallback_(callback)) {
     output.setMimeType(ContentService.MimeType.JAVASCRIPT);
     output.setContent(`${callback}&&${callback}(${JSON.stringify(data)});`);
   } else {
@@ -358,32 +306,30 @@ export function doGet(e) {
 
   let shareSession = null;
   try {
-    if (!isDebugMode_()) {
-      if (params.action === 'exchange_session') {
-        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
-        return createJsonOutput(issueOwnerSession_());
+    if (params.action === 'exchange_session') {
+      verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+      return createJsonOutput(issueOwnerSession_());
+    }
+    if (params.action === 'revoke_session') {
+      return createJsonOutput(revokeOwnerSession_(params.session_token || ''));
+    }
+    if (params.action === 'issue_share' || params.action === 'revoke_share') {
+      requireOwnerAuth_(e);
+      return createJsonOutput(
+        params.action === 'issue_share' ? issueShareSession_() : revokeShareSession_()
+      );
+    }
+    if (params.session_token) {
+      if (!validateOwnerToken_(params.session_token)) {
+        throw new Error('session expired or invalid');
       }
-      if (params.action === 'revoke_session') {
-        return createJsonOutput(revokeOwnerSession_(params.session_token || ''));
+    } else if (params.share_token) {
+      shareSession = validateShareToken_(params.share_token);
+      if (!shareSession) {
+        throw new Error('share session expired or invalid');
       }
-      if (params.action === 'issue_share' || params.action === 'revoke_share') {
-        requireOwnerAuth_(e);
-        return createJsonOutput(
-          params.action === 'issue_share' ? issueShareSession_() : revokeShareSession_()
-        );
-      }
-      if (params.session_token) {
-        if (!validateOwnerToken_(params.session_token)) {
-          throw new Error('session expired or invalid');
-        }
-      } else if (params.share_token) {
-        shareSession = validateShareToken_(params.share_token);
-        if (!shareSession) {
-          throw new Error('share session expired or invalid');
-        }
-      } else {
-        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
-      }
+    } else {
+      verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
     }
   } catch (error) {
     const message = (error && error.message) || 'unauthorized';
@@ -395,18 +341,21 @@ export function doGet(e) {
     if (!SHEET_NAMES.includes(params.sheet)) {
       return createJsonOutput({ error: 'sheet_not_found', sheet: params.sheet });
     }
-    const objects = readSheetObjects_(params.sheet);
-    if (!objects) {
+    const sheet = getSheet(params.sheet);
+    if (!sheet) {
       return createJsonOutput({ error: 'sheet_not_found', sheet: params.sheet });
     }
-    return createJsonpOutput(objects, params.callback);
+    return createJsonpOutput(
+      sheetValuesToObjects(sheet.getDataRange().getValues()),
+      params.callback
+    );
   }
 
   const data = {};
   SHEET_NAMES.forEach(name => {
-    const objects = readSheetObjects_(name);
-    if (objects) {
-      data[name] = objects;
+    const sheet = getSheet(name);
+    if (sheet) {
+      data[name] = sheetValuesToObjects(sheet.getDataRange().getValues());
     }
   });
   if (shareSession) {
