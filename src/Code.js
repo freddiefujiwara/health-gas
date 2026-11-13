@@ -14,8 +14,6 @@ const SHEET_NAMES = [
   "period_summaries",
   "body_composition",
   "body_segments",
-  "medication_plan",
-  "medication_log",
   "goals_settings",
   "data_dictionary",
   "lab_results",
