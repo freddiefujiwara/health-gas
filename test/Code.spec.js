@@ -64,6 +64,26 @@ const mockShareSheet = {
   })),
 };
 mockSpreadsheet.insertSheet = vi.fn().mockReturnValue(mockShareSheet);
+// In-memory CacheService backing store
+const cacheStore = new Map();
+global.CacheService = {
+  getScriptCache: vi.fn().mockImplementation(() => ({
+    get: vi.fn().mockImplementation((key) => (cacheStore.has(key) ? cacheStore.get(key) : null)),
+    getAll: vi.fn().mockImplementation((keys) => {
+      const out = {};
+      keys.forEach((key) => {
+        if (cacheStore.has(key)) {
+          out[key] = cacheStore.get(key);
+        }
+      });
+      return out;
+    }),
+    putAll: vi.fn().mockImplementation((entries) => {
+      Object.entries(entries).forEach(([k, v]) => cacheStore.set(k, v));
+    }),
+  })),
+};
+
 global.Logger = {
   log: vi.fn(),
 };
@@ -105,6 +125,7 @@ const authedEvent = (parameter = {}) => ({
 describe("doGet", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheStore.clear();
     mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
   });
 
@@ -183,6 +204,7 @@ describe("doGet", () => {
 describe("doGet authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheStore.clear();
     mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
     for (const key of Object.keys(scriptProperties)) {
       delete scriptProperties[key];
@@ -371,6 +393,7 @@ describe("doGet share sessions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheStore.clear();
     uuidCounter = 0;
     shareValues = [[...SHARE_HEADERS]];
     mockSpreadsheet.getSheetByName.mockImplementation((name) =>
@@ -537,6 +560,7 @@ describe("doGet owner sessions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheStore.clear();
     uuidCounter = 0;
     ownerValues = [[...SESSION_HEADERS]];
     shareValues = [[...SESSION_HEADERS]];
@@ -618,6 +642,12 @@ describe("doGet owner sessions", () => {
 });
 
 describe("staging spreadsheet override", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheStore.clear();
+    mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
+  });
+
   it("opens the SPREADSHEET_ID script property when set", () => {
     scriptProperties.SPREADSHEET_ID = "staging-file-id";
     SpreadsheetApp.openById.mockClear();
@@ -632,5 +662,30 @@ describe("staging spreadsheet override", () => {
     expect(SpreadsheetApp.openById).toHaveBeenCalledWith(
       "1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A"
     );
+  });
+});
+
+describe("sheet read cache", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheStore.clear();
+    mockSpreadsheet.getSheetByName.mockReturnValue(mockSheet);
+  });
+
+  it("reads sheets once and serves the second full request from cache", () => {
+    doGet(authedEvent());
+    const callsAfterFirst = mockRange.getValues.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+    doGet(authedEvent());
+    expect(mockRange.getValues.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("serves a single-sheet request from the cache warmed by a full request", () => {
+    doGet(authedEvent());
+    const calls = mockRange.getValues.mock.calls.length;
+    doGet(authedEvent({ sheet: "steps" }));
+    expect(mockRange.getValues.mock.calls.length).toBe(calls);
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    expect(JSON.parse(content)).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 });
