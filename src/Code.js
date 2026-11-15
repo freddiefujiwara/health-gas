@@ -382,15 +382,18 @@ const addDays_ = (dateStr, days) => {
 };
 
 const computePeriodSummaries_ = dailyRows => {
+  // Some rows were stored as Date cells and arrive as ISO datetimes
+  // ("2026-10-31T00:00:00+09:00"); only the date prefix matters here.
   const completed = (dailyRows || [])
-    .filter(row => row && /^\d{4}-\d{2}-\d{2}$/.test(String(row.date || ''))
+    .filter(row => row && /^\d{4}-\d{2}-\d{2}/.test(String(row.date || ''))
       && row.completeness === '完了'
       && Number.isFinite(Number(row.intake_kcal))
       && Number.isFinite(Number(row.balance_kcal)))
-    .sort((a, b) => (String(a.date) < String(b.date) ? -1 : 1));
+    .map(row => ({ ...row, date: String(row.date).slice(0, 10) }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
   const byWeek = new Map();
   completed.forEach(row => {
-    const monday = mondayOfWeek_(String(row.date));
+    const monday = mondayOfWeek_(row.date);
     if (!byWeek.has(monday)) {
       byWeek.set(monday, []);
     }
@@ -403,8 +406,8 @@ const computePeriodSummaries_ = dailyRows => {
     const totalBalance = rows.reduce((sum, row) => sum + Number(row.balance_kcal), 0);
     const full = days === 7;
     return {
-      start_date: full ? monday : String(rows[0].date),
-      end_date: full ? addDays_(monday, 6) : String(rows[days - 1].date),
+      start_date: full ? monday : rows[0].date,
+      end_date: full ? addDays_(monday, 6) : rows[days - 1].date,
       days,
       average_intake_kcal: Math.round(totalIntake / days),
       total_balance_kcal: totalBalance,
