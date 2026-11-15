@@ -6,12 +6,13 @@ const SPREADSHEET_ID = '1a80iQ8kgQ2mZaVPfxIfIpAn8ugyKkx0coNZa50vKR5A';
 // spreadsheet. When the property is unset, behavior is unchanged.
 
 // Sheets exposed by the API. The first row of each sheet is used as keys.
+// period_summaries is not a sheet read: it is computed from
+// daily_nutrition on every request (see computePeriodSummaries_).
 const SHEET_NAMES = [
   "overview",
   "daily_nutrition",
   "steps",
   "meals",
-  "period_summaries",
   "body_composition",
   "body_segments",
   "goals_settings",
@@ -357,6 +358,64 @@ const createJsonpOutput = (data, callback) => {
 
 const createJsonOutput = data => createJsonpOutput(data, null);
 
+// --- period_summaries: computed from daily_nutrition -------------------
+// Weekly (Monday-Sunday) aggregates over the completed daily_nutrition
+// rows. A week with all 7 days completed is reported with its Monday and
+// Sunday; a partial week is reported over its completed days only.
+const formatDateStr_ = dt => {
+  const pad = n => String(n).padStart(2, '0');
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+};
+
+const mondayOfWeek_ = dateStr => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - ((dt.getUTCDay() + 6) % 7));
+  return formatDateStr_(dt);
+};
+
+const addDays_ = (dateStr, days) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return formatDateStr_(dt);
+};
+
+const computePeriodSummaries_ = dailyRows => {
+  const completed = (dailyRows || [])
+    .filter(row => row && /^\d{4}-\d{2}-\d{2}$/.test(String(row.date || ''))
+      && row.completeness === '完了'
+      && Number.isFinite(Number(row.intake_kcal))
+      && Number.isFinite(Number(row.balance_kcal)))
+    .sort((a, b) => (String(a.date) < String(b.date) ? -1 : 1));
+  const byWeek = new Map();
+  completed.forEach(row => {
+    const monday = mondayOfWeek_(String(row.date));
+    if (!byWeek.has(monday)) {
+      byWeek.set(monday, []);
+    }
+    byWeek.get(monday).push(row);
+  });
+  return [...byWeek.keys()].sort().map(monday => {
+    const rows = byWeek.get(monday);
+    const days = rows.length;
+    const totalIntake = rows.reduce((sum, row) => sum + Number(row.intake_kcal), 0);
+    const totalBalance = rows.reduce((sum, row) => sum + Number(row.balance_kcal), 0);
+    const full = days === 7;
+    return {
+      start_date: full ? monday : String(rows[0].date),
+      end_date: full ? addDays_(monday, 6) : String(rows[days - 1].date),
+      days,
+      average_intake_kcal: Math.round(totalIntake / days),
+      total_balance_kcal: totalBalance,
+      average_balance_kcal: Math.round(totalBalance / days),
+      completeness: full ? '完了' : '途中集計',
+      source: 'daily_nutrition 集計',
+      notes: full ? '月〜日の週集計' : '完了日のみで集計',
+    };
+  });
+};
+
 export function doGet(e) {
   const params = (e && e.parameter) || {};
 
@@ -394,6 +453,10 @@ export function doGet(e) {
   }
 
   if (params.sheet) {
+    if (params.sheet === 'period_summaries') {
+      const daily = readSheetObjects_('daily_nutrition');
+      return createJsonpOutput(computePeriodSummaries_(daily || []), params.callback);
+    }
     if (!SHEET_NAMES.includes(params.sheet)) {
       return createJsonOutput({ error: 'sheet_not_found', sheet: params.sheet });
     }
@@ -411,6 +474,7 @@ export function doGet(e) {
       data[name] = objects;
     }
   });
+  data.period_summaries = computePeriodSummaries_(data.daily_nutrition || []);
   if (shareSession) {
     data._share = { expires_at: shareSession.expires_at };
   }

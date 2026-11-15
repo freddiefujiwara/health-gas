@@ -689,3 +689,63 @@ describe("sheet read cache", () => {
     expect(JSON.parse(content)).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 });
+
+describe("period_summaries computed from daily_nutrition", () => {
+  const dailyValues = [
+    ["date", "intake_kcal", "balance_kcal", "completeness"],
+    ["2026-11-02", 2000, -500, "完了"],
+    ["2026-11-03", 2100, -600, "完了"],
+    ["2026-11-04", 1900, -400, "完了"],
+    ["2026-11-05", 2000, -500, "完了"],
+    ["2026-11-06", 2200, -700, "完了"],
+    ["2026-11-07", 1800, -300, "完了"],
+    ["2026-11-08", 2000, -500, "完了"],
+    ["2026-11-09", 2200, -900, "完了"],
+    ["2026-11-10", 1955, -511, "途中（当日分）"],
+  ];
+  const dailySheet = {
+    getDataRange: vi.fn().mockImplementation(() => ({
+      getValues: vi.fn().mockImplementation(() => dailyValues.map((row) => [...row])),
+    })),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheStore.clear();
+    mockSpreadsheet.getSheetByName.mockImplementation((name) =>
+      name === "daily_nutrition" ? dailySheet : mockSheet
+    );
+  });
+
+  it("computes weekly summaries for a single-sheet request", () => {
+    doGet(authedEvent({ sheet: "period_summaries" }));
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    const data = JSON.parse(content);
+    expect(data).toHaveLength(2);
+    expect(data[0]).toMatchObject({
+      start_date: "2026-11-02",
+      end_date: "2026-11-08",
+      days: 7,
+      average_intake_kcal: 2000,
+      total_balance_kcal: -3500,
+      average_balance_kcal: -500,
+      completeness: "完了",
+    });
+    expect(data[1]).toMatchObject({
+      start_date: "2026-11-09",
+      end_date: "2026-11-09",
+      days: 1,
+      average_intake_kcal: 2200,
+      total_balance_kcal: -900,
+      completeness: "途中集計",
+    });
+  });
+
+  it("includes the computed summaries in the full payload", () => {
+    doGet(authedEvent());
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    const data = JSON.parse(content);
+    expect(data.period_summaries).toHaveLength(2);
+    expect(data.period_summaries[0].start_date).toBe("2026-11-02");
+  });
+});
