@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { doGet } from "../src/Code.js";
+import { buildWeeklyReviewItem_, buildWeeklyRss_, doGet, weeklyRssSlot_ } from "../src/Code.js";
 
 // Mockup of Google Apps Script global objects
 const mockRange = {
@@ -24,6 +24,7 @@ const mockContentService = {
   MimeType: {
     JSON: "JSON",
     JAVASCRIPT: "JAVASCRIPT",
+    XML: "XML",
   },
 };
 
@@ -747,5 +748,175 @@ describe("period_summaries computed from daily_nutrition", () => {
     const data = JSON.parse(content);
     expect(data.period_summaries).toHaveLength(2);
     expect(data.period_summaries[0].start_date).toBe("2026-11-02");
+  });
+});
+
+describe("weekly_rss slot", () => {
+  it("uses this Monday once 06:20 has passed", () => {
+    const slot = weeklyRssSlot_(Date.parse("2026-11-16T07:00:00+09:00"));
+    expect(slot.mondayKey).toBe("2026-11-16");
+    expect(slot.weekStartKey).toBe("2026-11-09");
+    expect(slot.weekEndKey).toBe("2026-11-15");
+    expect(slot.atMs).toBe(Date.parse("2026-11-16T06:20:00+09:00"));
+  });
+
+  it("falls back to the previous Monday before 06:20 and on Sunday", () => {
+    const early = weeklyRssSlot_(Date.parse("2026-11-16T05:00:00+09:00"));
+    expect(early.mondayKey).toBe("2026-11-09");
+    expect(early.weekStartKey).toBe("2026-11-02");
+    expect(early.weekEndKey).toBe("2026-11-08");
+    const sunday = weeklyRssSlot_(Date.parse("2026-11-15T12:00:00+09:00"));
+    expect(sunday.mondayKey).toBe("2026-11-09");
+  });
+
+  it("resolves midweek to the current week's Monday", () => {
+    const slot = weeklyRssSlot_(Date.parse("2026-11-18T12:00:00+09:00"));
+    expect(slot.mondayKey).toBe("2026-11-16");
+    expect(slot.weekStartKey).toBe("2026-11-09");
+  });
+});
+
+describe("buildWeeklyRss_", () => {
+  it("renders items with escaping and skips invalid ones", () => {
+    const xml = buildWeeklyRss_([
+      {
+        title: "a<b",
+        guid: "g1",
+        pubDate: "Mon, 16 Nov 2026 21:20:00 GMT",
+        descriptionText: "x & y",
+      },
+      { title: "no guid" },
+      null,
+    ]);
+    expect(xml).toContain("<title>a&lt;b</title>");
+    expect(xml).toContain("<description>x &amp; y</description>");
+    expect(xml).not.toContain("no guid");
+    expect(buildWeeklyRss_(null)).toContain("<channel>");
+  });
+});
+
+describe("buildWeeklyReviewItem_", () => {
+  const nowMs = Date.parse("2026-11-16T07:00:00+09:00");
+  const data = {
+    body_composition: [
+      { date: "2026-08-29", weight_kg: 95.7 },
+      { date: "2026-10-17", weight_kg: 91.5, body_fat_percent: 28.6, fat_mass_kg: 26.2, muscle_mass_kg: 61.9, visceral_fat_level: 17, bmi: 32.4 },
+      { date: "2026-11-14", weight_kg: 90.9, body_fat_percent: 28.0, fat_mass_kg: 25.5, muscle_mass_kg: 62.0, visceral_fat_level: 17, bmi: 32.2 },
+    ],
+    daily_nutrition: [
+      { date: "2026-08-30", intake_kcal: 2000, expenditure_kcal: 3000, balance_kcal: -1000, completeness: "完了" },
+      { date: "2026-11-09", intake_kcal: 1900, expenditure_kcal: 2800, balance_kcal: -900, completeness: "完了" },
+      { date: "2026-11-10", intake_kcal: 2500, expenditure_kcal: 3100, balance_kcal: -600, protein_g: 80, fat_g: 90, carbohydrates_g: 240, salt_g: 12.5, completeness: "完了" },
+      { date: "2026-11-11", intake_kcal: 2000, expenditure_kcal: 2900, balance_kcal: -900, completeness: "完了" },
+      { date: "2026-11-12", intake_kcal: 2350, expenditure_kcal: 3250, balance_kcal: -900, completeness: "完了" },
+      { date: "2026-11-13", intake_kcal: 2100, expenditure_kcal: 3100, balance_kcal: -1000, completeness: "完了" },
+      { date: "2026-11-14", intake_kcal: 2250, expenditure_kcal: 3200, balance_kcal: -950, completeness: "完了" },
+      { date: "2026-11-15", intake_kcal: 1955, expenditure_kcal: 2466, balance_kcal: -511, completeness: "途中（当日分）" },
+    ],
+    steps: [
+      { date: "2026-11-09", steps: 9606, distance_walking_running_m: 6356.4, flights_climbed: 23, completeness: "完了" },
+      { date: "2026-11-10", steps: 15407, distance_walking_running_m: 11643.3, flights_climbed: 19, completeness: "完了" },
+      { date: "2026-11-15", steps: 8978, distance_walking_running_m: 5740.7, flights_climbed: 8, completeness: "途中（当日分）" },
+    ],
+    chat_activity: [
+      { date: "2026-11-09", user_message_count: 120, engaged_minutes_est: 600, late_night_message_count: 5 },
+      { date: "2026-11-10", user_message_count: 200, engaged_minutes_est: 900, late_night_message_count: 12 },
+    ],
+    sleep_estimates: [
+      { date: "2026-11-10", sleep_start_est: "00:05", sleep_end_est: "03:05", duration_minutes_est: 180 },
+      { date: "2026-11-11", sleep_start_est: "22:07", sleep_end_est: "04:20", duration_minutes_est: 373 },
+    ],
+    lab_results: [
+      { date: "2026-11-12", item: "尿酸", value: 6.9, unit: "mg/dl", flag: "" },
+      { date: "2026-11-12", item: "クレアチニン", value: 1.13, unit: "mg/dl", flag: "H" },
+      { date: "2026-10-01", item: "尿酸", value: 6.0, unit: "mg/dl", flag: "" },
+    ],
+    goals_settings: [
+      { item: "中間目標", value: "90" },
+      { item: "最終目標", value: "80" },
+      { item: "エネルギー目標", value: "2000" },
+      { item: "タンパク質目標", value: "120" },
+      { item: "塩分目標", value: "6" },
+    ],
+  };
+
+  it("builds the full weekly review for 2026-11-09..15", () => {
+    const item = buildWeeklyReviewItem_(data, nowMs);
+    expect(item.title).toBe("11/9〜11/15 健康ウィークリー");
+    expect(item.guid).toBe("health-weekly-2026-11-16");
+    expect(item.pubDate).toBe(new Date(Date.parse("2026-11-16T06:20:00+09:00")).toUTCString());
+    const text = item.descriptionText;
+    expect(text).toContain("11/9〜11/15の週次レビュー。");
+    expect(text).toContain("■ 体重・体組成");
+    expect(text).toContain("11/14（土） 体重 90.9 kg・体脂肪率 28.0%・脂肪量 25.5 kg・筋肉量 62.0 kg・内臓脂肪レベル 17・BMI 32.2");
+    expect(text).toContain("最新の実測：11/14 90.9 kg（前回 10/17 比 -0.6 kg）");
+    expect(text).toContain("開始時（8/29 95.7 kg）から累計 -4.8 kg（-5.0%）");
+    expect(text).toContain("中間目標 90.0 kg まで あと 0.9 kg／最終目標 80.0 kg まで あと 10.9 kg");
+    expect(text).toContain("実測換算：体重 1 kg あたり 8,750 kcal（10/17〜11/14 の累積収支 -5,250 kcal から算出）");
+    expect(text).toContain("直近30日（完了日）の平均収支：-893 kcal/日");
+    expect(text).toContain("このペースでの30日後予測：87.8 kg");
+    expect(text).toContain("中間目標 90.0 kg の到達予測：2026/11/23");
+    expect(text).toContain("最終目標 80.0 kg の到達予測：2027/03/01");
+    expect(text).toContain("■ 栄養（からサポ）");
+    expect(text).toContain("11/9（月） 摂取 1,900／消費 2,800／収支 -900 kcal");
+    expect(text).toContain("栄養素：タンパク質 80 g・脂質 90 g・炭水化物 240 g・塩分 12.5 g");
+    expect(text).toContain("11/15（日） 摂取 1,955／消費 2,466／収支 -511 kcal（途中（当日分））");
+    expect(text).toContain("週の合計（完了 6 日）：摂取 13,100／消費 18,350／収支 -5,250 kcal");
+    expect(text).toContain("栄養指導の目標：エネルギー 2,000 kcal/日・タンパク質 120 g/日・塩分 6.0 g/日");
+    expect(text).toContain("■ 歩数");
+    expect(text).toContain("11/9（月） 9,606 歩（6,356 m・23 階）");
+    expect(text).toContain("11/11（水） 記録なし");
+    expect(text).toContain("週の合計：33,991 歩");
+    expect(text).toContain("■ 活動時間");
+    expect(text).toContain("11/9（月） 10時間00分（活動 120 回・深夜帯 5 回）");
+    expect(text).toContain("■ 睡眠（推定）");
+    expect(text).toContain("11/10（火） 00:05〜03:05（3時間00分）");
+    expect(text).toContain("■ 検査結果");
+    expect(text).toContain("・クレアチニン 1.13 mg/dl（H）");
+    expect(text).not.toContain("2026-10-01");
+  });
+
+  it("tolerates empty data", () => {
+    const item = buildWeeklyReviewItem_({}, nowMs);
+    expect(item.descriptionText).toContain("この週の実測はありません。");
+    expect(item.descriptionText).toContain("実測換算はデータ不足のため");
+    expect(item.descriptionText).toContain("この週の新しい検査結果はありません。");
+  });
+});
+
+describe("doGet weekly_rss", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheStore.clear();
+    delete scriptProperties.WEEKLY_RSS_TOKEN;
+    const emptySheet = {
+      getDataRange: vi.fn().mockImplementation(() => ({
+        getValues: vi.fn().mockReturnValue([["date"]]),
+      })),
+    };
+    mockSpreadsheet.getSheetByName.mockImplementation(() => emptySheet);
+  });
+
+  it("refuses when the token property is unset", () => {
+    doGet({ parameter: { action: "weekly_rss", token: "anything" } });
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    expect(JSON.parse(content)).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it("refuses a mismatched token", () => {
+    scriptProperties.WEEKLY_RSS_TOKEN = "expected-token";
+    doGet({ parameter: { action: "weekly_rss", token: "wrong" } });
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    expect(JSON.parse(content)).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it("serves the RSS feed for the right token", () => {
+    scriptProperties.WEEKLY_RSS_TOKEN = "expected-token";
+    doGet({ parameter: { action: "weekly_rss", token: "expected-token" } });
+    expect(mockContentService.setMimeType).toHaveBeenCalledWith("XML");
+    const content = mockContentService.setContent.mock.calls.at(-1)[0];
+    expect(content).toContain('<rss version="2.0">');
+    expect(content).toContain("健康ウィークリー");
+    expect(content).toContain("<item>");
   });
 });
