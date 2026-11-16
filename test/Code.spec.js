@@ -799,6 +799,7 @@ describe("buildWeeklyReviewItem_", () => {
   const nowMs = Date.parse("2026-11-16T07:00:00+09:00");
   const data = {
     body_composition: [
+      { date: "2018-09", weight_kg: 90.3 },
       { date: "2026-08-29", weight_kg: 95.7 },
       { date: "2026-10-17", weight_kg: 91.5, body_fat_percent: 28.6, fat_mass_kg: 26.2, muscle_mass_kg: 61.9, visceral_fat_level: 17, bmi: 32.4 },
       { date: "2026-11-14", weight_kg: 90.9, body_fat_percent: 28.0, fat_mass_kg: 25.5, muscle_mass_kg: 62.0, visceral_fat_level: 17, bmi: 32.2 },
@@ -832,6 +833,7 @@ describe("buildWeeklyReviewItem_", () => {
       { date: "2026-10-01", item: "尿酸", value: 6.0, unit: "mg/dl", flag: "" },
     ],
     goals_settings: [
+      { item: "開始時体重", value: "99.7", unit_or_date: "kg / 2026-07-25" },
       { item: "中間目標", value: "90" },
       { item: "最終目標", value: "80" },
       { item: "エネルギー目標", value: "2000" },
@@ -850,7 +852,7 @@ describe("buildWeeklyReviewItem_", () => {
     expect(text).toContain("■ 体重・体組成");
     expect(text).toContain("11/14（土） 体重 90.9 kg・体脂肪率 28.0%・脂肪量 25.5 kg・筋肉量 62.0 kg・内臓脂肪レベル 17・BMI 32.2");
     expect(text).toContain("最新の実測：11/14 90.9 kg（前回 10/17 比 -0.6 kg）");
-    expect(text).toContain("開始時（8/29 95.7 kg）から累計 -4.8 kg（-5.0%）");
+    expect(text).toContain("開始時（7/25 99.7 kg）から累計 -8.8 kg（-8.8%）");
     expect(text).toContain("中間目標 90.0 kg まで あと 0.9 kg／最終目標 80.0 kg まで あと 10.9 kg");
     expect(text).toContain("実測換算：体重 1 kg あたり 8,750 kcal（10/17〜11/14 の累積収支 -5,250 kcal から算出）");
     expect(text).toContain("直近30日（完了日）の平均収支：-893 kcal/日");

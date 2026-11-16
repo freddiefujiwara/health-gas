@@ -704,6 +704,7 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   const bodyRows = (data.body_composition || [])
     .filter(row => row && weeklyRssNum_(row.weight_kg) !== null)
     .map(row => ({ ...row, date: weeklyRssDate10_(row.date) }))
+    .filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   const nutritionByDate = weeklyRssByDate_(data.daily_nutrition);
   const stepsByDate = weeklyRssByDate_(data.steps);
@@ -764,12 +765,28 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
         weeklyRssFmtSigned1_(latest.weight_kg - previous.weight_kg) + ' kg）';
     }
     lines.push(latestLine);
-    const firstBody = bodyRows.length ? bodyRows[0] : null;
-    if (firstBody && firstBody.date !== latest.date) {
-      const totalChange = latest.weight_kg - firstBody.weight_kg;
-      const pct = (totalChange / firstBody.weight_kg) * 100;
+    // The starting reference comes from goals_settings (開始時体重,
+    // whose unit_or_date carries the start date); the earliest
+    // full-date measurement is the fallback. Partial dates such
+    // as "2018-09" (month precision) never reach this point
+    // because bodyRows only keeps full dates.
+    const startGoalRow = goalByItem['開始時体重'];
+    let startRef = null;
+    if (startGoalRow && weeklyRssNum_(startGoalRow.value) !== null) {
+      const dateMatch = String(startGoalRow.unit_or_date || '').match(/\d{4}-\d{2}-\d{2}/);
+      startRef = {
+        date: dateMatch ? dateMatch[0] : null,
+        weightKg: weeklyRssNum_(startGoalRow.value),
+      };
+    } else if (bodyRows.length) {
+      startRef = { date: bodyRows[0].date, weightKg: weeklyRssNum_(bodyRows[0].weight_kg) };
+    }
+    if (startRef && startRef.date !== latest.date) {
+      const totalChange = latest.weight_kg - startRef.weightKg;
+      const pct = (totalChange / startRef.weightKg) * 100;
       lines.push(
-        '開始時（' + weeklyRssMd_(firstBody.date) + ' ' + weeklyRssFmt1_(firstBody.weight_kg) +
+        '開始時（' + (startRef.date ? weeklyRssMd_(startRef.date) + ' ' : '') +
+          weeklyRssFmt1_(startRef.weightKg) +
           ' kg）から累計 ' + weeklyRssFmtSigned1_(totalChange) + ' kg（' +
           weeklyRssFmtSigned1_(pct) + '%）',
       );
