@@ -884,6 +884,31 @@ describe("buildWeeklyReviewItem_", () => {
     expect(item.descriptionText).toContain("実測換算はデータ不足のため");
     expect(item.descriptionText).toContain("この週の新しい検査結果はありません。");
   });
+
+  it("adds the predicted weight at output time from balances after the latest measurement", () => {
+    const item = buildWeeklyReviewItem_(
+      {
+        body_composition: [{ date: "2026-11-07", weight_kg: 92.0 }],
+        daily_nutrition: [
+          { date: "2026-11-08", intake_kcal: 2000, expenditure_kcal: 2500, balance_kcal: -500, completeness: "完了" },
+          { date: "2026-11-09", intake_kcal: 2000, expenditure_kcal: 2500, balance_kcal: -500, completeness: "完了" },
+          { date: "2026-11-10", intake_kcal: 2000, expenditure_kcal: 2500, balance_kcal: -500, completeness: "途中（当日分）" },
+        ],
+        steps: [],
+        chat_activity: [],
+        sleep_estimates: [],
+        lab_results: [],
+        goals_settings: [],
+      },
+      nowMs,
+    );
+    // 92.0 kg on 11/7 plus -1,000 kcal of completed balances at the
+    // 7,700 fallback factor -> 91.9 kg. The 途中 row is excluded.
+    expect(item.descriptionText).toContain(
+      "出力時点の推定体重：91.9 kg（11/9 時点。最新実測 11/7 の 92.0 kg から、完了した収支の累計 -1,000 kcal を実測換算で換算）",
+    );
+    expect(item.descriptionText).toContain("推定体重は 91.9 kg。");
+  });
 });
 
 describe("doGet weekly_rss", () => {
