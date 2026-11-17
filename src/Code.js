@@ -519,7 +519,7 @@ const WEEKLY_RSS_SHEETS = [
 ];
 const WEEKLY_RSS_DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKLY_RSS_JST_OFFSET_MS = 9 * 60 * 60 * 1000;
-const WEEKLY_RSS_SUMMARY_CHARS = 110;
+const WEEKLY_RSS_SUMMARY_CHARS = 140;
 const WEEKLY_RSS_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const WEEKLY_RSS_DEFAULT_KCAL_PER_KG = 7700;
 
@@ -722,6 +722,7 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   };
 
   const lines = [];
+  let predictedNowInfo = null;
   const section = title => {
     lines.push('');
     lines.push('■ ' + title);
@@ -833,6 +834,34 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
     : null;
   if (avgBalance30 !== null) {
     lines.push('直近30日（完了日）の平均収支：' + weeklyRssFmtSignedInt_(Math.round(avgBalance30)) + ' kcal/日');
+  }
+  // Predicted weight at output time: the latest measurement plus
+  // the completed balances recorded after it, converted with the
+  // same factor (the end point of the front-end's actual-balance
+  // projection).
+  if (latest) {
+    let sumAfterAnchor = 0;
+    let lastAfterAnchorDate = null;
+    completedUpToWeek.forEach(row => {
+      const key = weeklyRssDate10_(row.date);
+      if (key > latest.date) {
+        sumAfterAnchor += weeklyRssNum_(row.balance_kcal) || 0;
+        lastAfterAnchorDate = key;
+      }
+    });
+    if (lastAfterAnchorDate) {
+      predictedNowInfo = {
+        weightKg: latest.weight_kg + sumAfterAnchor / kcalPerKg,
+        asOf: lastAfterAnchorDate,
+        sumKcal: sumAfterAnchor,
+      };
+      lines.push(
+        '出力時点の推定体重：' + weeklyRssFmt1_(predictedNowInfo.weightKg) + ' kg（' +
+          weeklyRssMd_(lastAfterAnchorDate) + ' 時点。最新実測 ' + weeklyRssMd_(latest.date) +
+          ' の ' + weeklyRssFmt1_(latest.weight_kg) + ' kg から、完了した収支の累計 ' +
+          weeklyRssFmtSignedInt_(sumAfterAnchor) + ' kcal を実測換算で換算）',
+      );
+    }
   }
   if (latest && avgBalance30 !== null) {
     const predicted30 = latest.weight_kg + (avgBalance30 * 30) / kcalPerKg;
@@ -1062,6 +1091,9 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
     summary +=
       '体重の最新実測は ' + weeklyRssFmt1_(latest.weight_kg) + ' kg（' +
       weeklyRssMd_(latest.date) + '）。';
+  }
+  if (predictedNowInfo) {
+    summary += '推定体重は ' + weeklyRssFmt1_(predictedNowInfo.weightKg) + ' kg。';
   }
   if (completedDays) {
     summary +=
