@@ -693,16 +693,16 @@ describe("sheet read cache", () => {
 
 describe("period_summaries computed from daily_nutrition", () => {
   const dailyValues = [
-    ["date", "intake_kcal", "balance_kcal", "completeness"],
-    ["2026-11-02", 2000, -500, "完了"],
-    ["2026-11-03", 2100, -600, "完了"],
-    ["2026-11-04", 1900, -400, "完了"],
-    ["2026-11-05", 2000, -500, "完了"],
-    ["2026-11-06", 2200, -700, "完了"],
-    ["2026-11-07", 1800, -300, "完了"],
-    ["2026-11-08", 2000, -500, "完了"],
-    ["2026-11-09T00:00:00+09:00", 2200, -900, "完了"],
-    ["2026-11-10", 1955, -511, "途中（当日分）"],
+    ["date", "intake_kcal", "expenditure_kcal", "balance_kcal", "completeness"],
+    ["2026-11-02", 2000, 2500, -500, "完了"],
+    ["2026-11-03", 2100, 2700, -600, "完了"],
+    ["2026-11-04", 1900, 2300, -400, "完了"],
+    ["2026-11-05", 2000, 2500, -500, "完了"],
+    ["2026-11-06", 2200, 2900, -700, "完了"],
+    ["2026-11-07", 1800, 2100, -300, "完了"],
+    ["2026-11-08", 2000, 2500, -500, "完了"],
+    ["2026-11-09T00:00:00+09:00", 2200, 3100, -900, "完了"],
+    ["2026-11-10", 1955, 2466, -511, "途中（当日分）"],
   ];
   const dailySheet = {
     getDataRange: vi.fn().mockImplementation(() => ({
@@ -728,6 +728,7 @@ describe("period_summaries computed from daily_nutrition", () => {
       end_date: "2026-11-08",
       days: 7,
       average_intake_kcal: 2000,
+      average_expenditure_kcal: 2500,
       total_balance_kcal: -3500,
       average_balance_kcal: -500,
       completeness: "完了",
@@ -737,6 +738,7 @@ describe("period_summaries computed from daily_nutrition", () => {
       end_date: "2026-11-09",
       days: 1,
       average_intake_kcal: 2200,
+      average_expenditure_kcal: 3100,
       total_balance_kcal: -900,
       completeness: "途中集計",
     });
