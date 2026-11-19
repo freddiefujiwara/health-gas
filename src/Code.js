@@ -403,6 +403,7 @@ const computePeriodSummaries_ = dailyRows => {
     const rows = byWeek.get(monday);
     const days = rows.length;
     const totalIntake = rows.reduce((sum, row) => sum + Number(row.intake_kcal), 0);
+    const totalExpenditure = rows.reduce((sum, row) => sum + Number(row.expenditure_kcal), 0);
     const totalBalance = rows.reduce((sum, row) => sum + Number(row.balance_kcal), 0);
     const full = days === 7;
     return {
@@ -410,6 +411,7 @@ const computePeriodSummaries_ = dailyRows => {
       end_date: full ? addDays_(monday, 6) : rows[days - 1].date,
       days,
       average_intake_kcal: Math.round(totalIntake / days),
+      average_expenditure_kcal: Math.round(totalExpenditure / days),
       total_balance_kcal: totalBalance,
       average_balance_kcal: Math.round(totalBalance / days),
       completeness: full ? '完了' : '途中集計',
