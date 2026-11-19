@@ -517,22 +517,16 @@ const WEEKLY_RSS_SHEETS = [
   'lab_results',
   'goals_settings',
 ];
-const WEEKLY_RSS_DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKLY_RSS_JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const WEEKLY_RSS_SUMMARY_CHARS = 140;
 const WEEKLY_RSS_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const WEEKLY_RSS_DEFAULT_KCAL_PER_KG = 7700;
 
-// The JST calendar date (YYYY-MM-DD) containing the instant.
-const weeklyRssJstDateKey_ = ms => {
-  const shifted = new Date(ms + WEEKLY_RSS_JST_OFFSET_MS);
-  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(shifted.getUTCDate()).padStart(2, '0');
-  return shifted.getUTCFullYear() + '-' + month + '-' + day;
-};
-
-const weeklyRssAddDays_ = (dateKey, days) =>
-  weeklyRssJstDateKey_(Date.parse(dateKey + 'T00:00:00+09:00') + days * WEEKLY_RSS_DAY_MS);
+// The JST calendar date (YYYY-MM-DD) containing the instant. Date-key
+// arithmetic below reuses addDays_ / mondayOfWeek_ from the
+// period_summaries section: for plain YYYY-MM-DD keys they agree with
+// the JST-based computation.
+const weeklyRssJstDateKey_ = ms => formatDateStr_(new Date(ms + WEEKLY_RSS_JST_OFFSET_MS));
 
 const weeklyRssWeekday_ = dateKey =>
   WEEKLY_RSS_WEEKDAYS[new Date(Date.parse(dateKey + 'T00:00:00Z')).getUTCDay()];
@@ -551,17 +545,15 @@ const weeklyRssDayLabel_ = dateKey =>
 // weekEndKey }.
 export const weeklyRssSlot_ = nowMs => {
   const todayKey = weeklyRssJstDateKey_(nowMs);
-  const dow = new Date(Date.parse(todayKey + 'T00:00:00Z')).getUTCDay();
-  const daysSinceMonday = (dow + 6) % 7;
-  const thisMondayKey = weeklyRssAddDays_(todayKey, -daysSinceMonday);
+  const thisMondayKey = mondayOfWeek_(todayKey);
   const thisMondayAtMs = Date.parse(thisMondayKey + 'T' + WEEKLY_RSS_TIME + '+09:00');
   const mondayKey =
-    thisMondayAtMs <= nowMs ? thisMondayKey : weeklyRssAddDays_(thisMondayKey, -7);
+    thisMondayAtMs <= nowMs ? thisMondayKey : addDays_(thisMondayKey, -7);
   return {
     mondayKey,
     atMs: Date.parse(mondayKey + 'T' + WEEKLY_RSS_TIME + '+09:00'),
-    weekStartKey: weeklyRssAddDays_(mondayKey, -7),
-    weekEndKey: weeklyRssAddDays_(mondayKey, -1),
+    weekStartKey: addDays_(mondayKey, -7),
+    weekEndKey: addDays_(mondayKey, -1),
   };
 };
 
@@ -648,7 +640,7 @@ const weeklyRssByDate_ = rows => {
 const weeklyRssWeekDates_ = slot => {
   const dates = [];
   for (let i = 0; i < 7; i += 1) {
-    dates.push(weeklyRssAddDays_(slot.weekStartKey, i));
+    dates.push(addDays_(slot.weekStartKey, i));
   }
   return dates;
 };
@@ -878,7 +870,7 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
         const days = Math.ceil((remaining * kcalPerKg) / -avgBalance30);
         return (
           label + ' ' + weeklyRssFmt1_(goalKg) + ' kg の到達予測：' +
-          weeklyRssAddDays_(latest.date, days).replace(/-/g, '/')
+          addDays_(latest.date, days).replace(/-/g, '/')
         );
       };
       const interimLine = reachLine('中間目標', goalValue('中間目標'));
