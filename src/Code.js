@@ -273,7 +273,7 @@ const getSheet = name => getSpreadsheet().getSheetByName(name);
 const sheetValuesToObjects = values => {
   const headers = values.shift();
   return values
-    .filter(row => row.some(cell => cell !== '' && cell !== null))
+    .filter(row => Array.isArray(row) && row.some(cell => cell !== '' && cell !== null))
     .map(row =>
       headers.reduce((obj, header, index) => {
         const value = row[index];
@@ -367,6 +367,17 @@ const formatDateStr_ = dt => {
   return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
 };
 
+// A YYYY-MM-DD key that names a day which actually exists (the Date
+// constructor silently rolls 2026-02-30 over to March 2).
+const isRealDateKey_ = key => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    return false;
+  }
+  const [y, m, d] = key.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+};
+
 const mondayOfWeek_ = dateStr => {
   const [y, m, d] = dateStr.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -385,14 +396,19 @@ const computePeriodSummaries_ = dailyRows => {
   // Some rows were stored as Date cells and arrive as ISO datetimes
   // ("2026-10-31T00:00:00+09:00"); only the date prefix matters here.
   const completed = (dailyRows || [])
-    .filter(row => row && /^\d{4}-\d{2}-\d{2}/.test(String(row.date || ''))
+    .filter(row => row && isRealDateKey_(String(row.date || '').slice(0, 10))
       && row.completeness === '完了'
-      && Number.isFinite(Number(row.intake_kcal))
-      && Number.isFinite(Number(row.balance_kcal)))
-    .map(row => ({ ...row, date: String(row.date).slice(0, 10) }))
-    .sort((a, b) => (a.date < b.date ? -1 : 1));
+      && weeklyRssNum_(row.intake_kcal) !== null
+      && weeklyRssNum_(row.expenditure_kcal) !== null
+      && weeklyRssNum_(row.balance_kcal) !== null)
+    .map(row => ({ ...row, date: String(row.date).slice(0, 10) }));
+  // One row per date: a duplicated date keeps its last row (the same
+  // rule weeklyRssByDate_ applies), so a date is never counted twice.
+  const byDate = new Map();
+  completed.forEach(row => byDate.set(row.date, row));
+  const deduped = [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
   const byWeek = new Map();
-  completed.forEach(row => {
+  deduped.forEach(row => {
     const monday = mondayOfWeek_(row.date);
     if (!byWeek.has(monday)) {
       byWeek.set(monday, []);
@@ -402,9 +418,9 @@ const computePeriodSummaries_ = dailyRows => {
   return [...byWeek.keys()].sort().map(monday => {
     const rows = byWeek.get(monday);
     const days = rows.length;
-    const totalIntake = rows.reduce((sum, row) => sum + Number(row.intake_kcal), 0);
-    const totalExpenditure = rows.reduce((sum, row) => sum + Number(row.expenditure_kcal), 0);
-    const totalBalance = rows.reduce((sum, row) => sum + Number(row.balance_kcal), 0);
+    const totalIntake = rows.reduce((sum, row) => sum + weeklyRssNum_(row.intake_kcal), 0);
+    const totalExpenditure = rows.reduce((sum, row) => sum + weeklyRssNum_(row.expenditure_kcal), 0);
+    const totalBalance = rows.reduce((sum, row) => sum + weeklyRssNum_(row.balance_kcal), 0);
     const full = days === 7;
     return {
       start_date: full ? monday : rows[0].date,
@@ -559,13 +575,24 @@ export const weeklyRssSlot_ = nowMs => {
   };
 };
 
-const escapeWeeklyXmlText_ = value =>
-  String(value === null || value === undefined ? '' : value)
+const escapeWeeklyXmlText_ = value => {
+  let text;
+  try {
+    text = String(value === null || value === undefined ? '' : value);
+  } catch (error) {
+    text = '';
+  }
+  return text
+    // XML 1.0 cannot carry lone surrogates or C0 controls other than
+    // tab / LF / CR: lone surrogates become U+FFFD, controls are cut.
+    .replace(/([\uD800-\uDBFF][\uDC00-\uDFFF])|[\uD800-\uDFFF]/g, (match, pair) => pair || '\uFFFD')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+};
 
 const createWeeklyXmlResponse_ = xml => {
   const output = ContentService.createTextOutput();
@@ -602,15 +629,42 @@ export const buildWeeklyRss_ = items => {
   return lines.join('\n');
 };
 
+// Numbers and numeric strings only: a bare Number() would invent
+// measurements out of booleans (true -> 1), single-element arrays
+// ([90.5] -> 90.5), blank strings ('' -> 0) and Date cells (epoch ms).
 const weeklyRssNum_ = value => {
-  if (value === null || value === undefined || value === '') {
-    return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
   }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 };
 
-const weeklyRssDate10_ = value => String(value === null || value === undefined ? '' : value).slice(0, 10);
+// Count-like fields (steps, minutes, tallies): a negative count is a
+// deformed measurement, not a value.
+const weeklyRssCount_ = value => {
+  const parsed = weeklyRssNum_(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
+};
+
+// Total text coercion for fields printed into the feed: strings pass,
+// numbers and booleans stringify, anything else (including objects
+// whose toString is not callable) reads as empty instead of throwing
+// or printing "[object Object]".
+const weeklyRssText_ = value => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return '';
+};
+
+const weeklyRssDate10_ = value => weeklyRssText_(value).slice(0, 10);
 
 const weeklyRssFmtInt_ = value => String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
@@ -631,7 +685,7 @@ const weeklyRssFmtDuration_ = minutes => {
 
 const weeklyRssByDate_ = rows => {
   const map = {};
-  (rows || []).forEach(row => {
+  (Array.isArray(rows) ? rows : []).forEach(row => {
     if (row && row.date) {
       map[weeklyRssDate10_(row.date)] = row;
     }
@@ -653,18 +707,19 @@ const weeklyRssWeekDates_ = slot => {
 // the factor is the cumulative balance between them divided by
 // the weight lost. Null when it cannot be computed.
 const weeklyRssEmpirical_ = (bodyRows, nutritionRows) => {
-  const completed = (nutritionRows || [])
+  const completed = (Array.isArray(nutritionRows) ? nutritionRows : [])
     .filter(row => row && row.completeness === '完了' && weeklyRssNum_(row.balance_kcal) !== null)
     .map(row => ({ date: weeklyRssDate10_(row.date), balanceKcal: weeklyRssNum_(row.balance_kcal) }))
+    .filter(row => isRealDateKey_(row.date))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   if (!completed.length) {
     return null;
   }
   const firstCompletedDate = completed[0].date;
-  const anchors = (bodyRows || [])
+  const anchors = (Array.isArray(bodyRows) ? bodyRows : [])
     .filter(row => row && weeklyRssNum_(row.weight_kg) !== null)
     .map(row => ({ date: weeklyRssDate10_(row.date), weightKg: weeklyRssNum_(row.weight_kg) }))
-    .filter(row => row.date >= firstCompletedDate)
+    .filter(row => isRealDateKey_(row.date) && row.date >= firstCompletedDate)
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   if (anchors.length < 2) {
     return null;
@@ -681,8 +736,14 @@ const weeklyRssEmpirical_ = (bodyRows, nutritionRows) => {
   if (totalBalance >= 0 || lossKg <= 0) {
     return null;
   }
+  const kcalPerKg = Math.round(-totalBalance / lossKg);
+  if (!Number.isFinite(kcalPerKg) || kcalPerKg < 1) {
+    // A factor that rounds to 0 kcal/kg is unusable: the forecasts
+    // divide by it and would print Infinity.
+    return null;
+  }
   return {
-    kcalPerKg: Math.round(-totalBalance / lossKg),
+    kcalPerKg,
     fromDate: first.date,
     toDate: last.date,
     totalBalanceKcal: totalBalance,
@@ -695,19 +756,23 @@ const weeklyRssEmpirical_ = (bodyRows, nutritionRows) => {
 export const buildWeeklyReviewItem_ = (data, nowMs) => {
   const slot = weeklyRssSlot_(nowMs);
   const weekDates = weeklyRssWeekDates_(slot);
-  const bodyRows = (data.body_composition || [])
+  // Sheet values arrive as arrays from readSheetObjects_; anything
+  // else reads as an empty sheet rather than throwing here.
+  const sheetRows = name => (data && Array.isArray(data[name]) ? data[name] : []);
+  const bodyRows = sheetRows('body_composition')
     .filter(row => row && weeklyRssNum_(row.weight_kg) !== null)
     .map(row => ({ ...row, date: weeklyRssDate10_(row.date) }))
-    .filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date))
+    .filter(row => isRealDateKey_(row.date))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
-  const nutritionByDate = weeklyRssByDate_(data.daily_nutrition);
-  const stepsByDate = weeklyRssByDate_(data.steps);
-  const activityByDate = weeklyRssByDate_(data.chat_activity);
-  const sleepByDate = weeklyRssByDate_(data.sleep_estimates);
+  const nutritionByDate = weeklyRssByDate_(sheetRows('daily_nutrition'));
+  const stepsByDate = weeklyRssByDate_(sheetRows('steps'));
+  const activityByDate = weeklyRssByDate_(sheetRows('chat_activity'));
+  const sleepByDate = weeklyRssByDate_(sheetRows('sleep_estimates'));
   const goalByItem = {};
-  (data.goals_settings || []).forEach(row => {
-    if (row && row.item) {
-      goalByItem[row.item] = row;
+  sheetRows('goals_settings').forEach(row => {
+    const item = weeklyRssText_(row && row.item);
+    if (item) {
+      goalByItem[item] = row;
     }
   });
   const goalValue = item => {
@@ -768,7 +833,7 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
     const startGoalRow = goalByItem['開始時体重'];
     let startRef = null;
     if (startGoalRow && weeklyRssNum_(startGoalRow.value) !== null) {
-      const dateMatch = String(startGoalRow.unit_or_date || '').match(/\d{4}-\d{2}-\d{2}/);
+      const dateMatch = weeklyRssText_(startGoalRow.unit_or_date).match(/\d{4}-\d{2}-\d{2}/);
       startRef = {
         date: dateMatch ? dateMatch[0] : null,
         weightKg: weeklyRssNum_(startGoalRow.value),
@@ -776,15 +841,19 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
     } else if (bodyRows.length) {
       startRef = { date: bodyRows[0].date, weightKg: weeklyRssNum_(bodyRows[0].weight_kg) };
     }
-    if (startRef && startRef.date !== latest.date) {
+    if (startRef && startRef.weightKg > 0 && startRef.date !== latest.date) {
       const totalChange = latest.weight_kg - startRef.weightKg;
       const pct = (totalChange / startRef.weightKg) * 100;
-      lines.push(
-        '開始時（' + (startRef.date ? weeklyRssMd_(startRef.date) + ' ' : '') +
-          weeklyRssFmt1_(startRef.weightKg) +
-          ' kg）から累計 ' + weeklyRssFmtSigned1_(totalChange) + ' kg（' +
-          weeklyRssFmtSigned1_(pct) + '%）',
-      );
+      // A start weight near zero makes the percentage overflow; the
+      // line is only meaningful with a finite percentage.
+      if (Number.isFinite(pct)) {
+        lines.push(
+          '開始時（' + (startRef.date ? weeklyRssMd_(startRef.date) + ' ' : '') +
+            weeklyRssFmt1_(startRef.weightKg) +
+            ' kg）から累計 ' + weeklyRssFmtSigned1_(totalChange) + ' kg（' +
+            weeklyRssFmtSigned1_(pct) + '%）',
+        );
+      }
     }
     const interimGoal = goalValue('中間目標');
     const finalGoal = goalValue('最終目標');
@@ -808,7 +877,7 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
 
   // Empirical factor, recent pace and forecasts (same figures
   // the overview cards show).
-  const empirical = weeklyRssEmpirical_(data.body_composition, data.daily_nutrition);
+  const empirical = weeklyRssEmpirical_(sheetRows('body_composition'), sheetRows('daily_nutrition'));
   const kcalPerKg = empirical ? empirical.kcalPerKg : WEEKLY_RSS_DEFAULT_KCAL_PER_KG;
   if (empirical) {
     lines.push(
@@ -819,8 +888,13 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   } else {
     lines.push('実測換算はデータ不足のため、理論値 7,700 kcal/kg で計算しています。');
   }
-  const completedUpToWeek = (data.daily_nutrition || [])
-    .filter(row => row && row.completeness === '完了' && weeklyRssDate10_(row.date) <= slot.weekEndKey)
+  const completedUpToWeek = sheetRows('daily_nutrition')
+    .filter(row => row && row.completeness === '完了'
+      && isRealDateKey_(weeklyRssDate10_(row.date))
+      && weeklyRssDate10_(row.date) <= slot.weekEndKey
+      // A completed row whose balance does not parse is excluded
+      // rather than counted as 0 (weeklyRssEmpirical_'s rule).
+      && weeklyRssNum_(row.balance_kcal) !== null)
     .sort((a, b) => (weeklyRssDate10_(a.date) < weeklyRssDate10_(b.date) ? -1 : 1));
   const last30 = completedUpToWeek.slice(-30);
   const avgBalance30 = last30.length
@@ -870,9 +944,15 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
           return label + ' ' + weeklyRssFmt1_(goalKg) + ' kg には到達済みです';
         }
         const days = Math.ceil((remaining * kcalPerKg) / -avgBalance30);
+        const reachDate = addDays_(latest.date, days);
+        if (!isRealDateKey_(reachDate)) {
+          // A near-zero daily pace pushes the forecast beyond the
+          // representable date range; omit it rather than print NaN.
+          return null;
+        }
         return (
           label + ' ' + weeklyRssFmt1_(goalKg) + ' kg の到達予測：' +
-          addDays_(latest.date, days).replace(/-/g, '/')
+          reachDate.replace(/-/g, '/')
         );
       };
       const interimLine = reachLine('中間目標', goalValue('中間目標'));
@@ -906,8 +986,9 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
       ' 摂取 ' + weeklyRssFmtInt_(intake) +
       '／消費 ' + (expenditure === null ? '—' : weeklyRssFmtInt_(expenditure)) +
       '／収支 ' + (balance === null ? '—' : weeklyRssFmtSignedInt_(balance)) + ' kcal';
-    if (row.completeness && row.completeness !== '完了') {
-      line += '（' + row.completeness + '）';
+    const completeness = weeklyRssText_(row.completeness);
+    if (completeness && completeness !== '完了') {
+      line += '（' + completeness + '）';
     }
     lines.push(line);
     if (weeklyRssNum_(row.protein_g) !== null) {
@@ -965,24 +1046,25 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   let stepsDays = 0;
   weekDates.forEach(dateKey => {
     const row = stepsByDate[dateKey];
-    if (!row || weeklyRssNum_(row.steps) === null) {
+    if (!row || weeklyRssCount_(row.steps) === null) {
       lines.push(weeklyRssDayLabel_(dateKey) + ' 記録なし');
       return;
     }
-    const stepCount = weeklyRssNum_(row.steps);
+    const stepCount = weeklyRssCount_(row.steps);
     let line = weeklyRssDayLabel_(dateKey) + ' ' + weeklyRssFmtInt_(stepCount) + ' 歩';
     const extras = [];
-    if (weeklyRssNum_(row.distance_walking_running_m) !== null) {
-      extras.push(weeklyRssFmtInt_(row.distance_walking_running_m) + ' m');
+    if (weeklyRssCount_(row.distance_walking_running_m) !== null) {
+      extras.push(weeklyRssFmtInt_(weeklyRssCount_(row.distance_walking_running_m)) + ' m');
     }
-    if (weeklyRssNum_(row.flights_climbed) !== null) {
-      extras.push(weeklyRssFmtInt_(row.flights_climbed) + ' 階');
+    if (weeklyRssCount_(row.flights_climbed) !== null) {
+      extras.push(weeklyRssFmtInt_(weeklyRssCount_(row.flights_climbed)) + ' 階');
     }
     if (extras.length) {
       line += '（' + extras.join('・') + '）';
     }
-    if (row.completeness && row.completeness !== '完了') {
-      line += '（' + row.completeness + '）';
+    const completeness = weeklyRssText_(row.completeness);
+    if (completeness && completeness !== '完了') {
+      line += '（' + completeness + '）';
     }
     lines.push(line);
     totalSteps += stepCount;
@@ -1001,18 +1083,18 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   let activityDays = 0;
   weekDates.forEach(dateKey => {
     const row = activityByDate[dateKey];
-    if (!row || weeklyRssNum_(row.engaged_minutes_est) === null) {
+    if (!row || weeklyRssCount_(row.engaged_minutes_est) === null) {
       lines.push(weeklyRssDayLabel_(dateKey) + ' 記録なし');
       return;
     }
-    const engaged = weeklyRssNum_(row.engaged_minutes_est);
+    const engaged = weeklyRssCount_(row.engaged_minutes_est);
     let line = weeklyRssDayLabel_(dateKey) + ' ' + weeklyRssFmtDuration_(engaged);
     const bits = [];
-    if (weeklyRssNum_(row.user_message_count) !== null) {
-      bits.push('活動 ' + weeklyRssFmtInt_(row.user_message_count) + ' 回');
+    if (weeklyRssCount_(row.user_message_count) !== null) {
+      bits.push('活動 ' + weeklyRssFmtInt_(weeklyRssCount_(row.user_message_count)) + ' 回');
     }
-    if (weeklyRssNum_(row.late_night_message_count) !== null) {
-      bits.push('深夜帯 ' + weeklyRssFmtInt_(row.late_night_message_count) + ' 回');
+    if (weeklyRssCount_(row.late_night_message_count) !== null) {
+      bits.push('深夜帯 ' + weeklyRssFmtInt_(weeklyRssCount_(row.late_night_message_count)) + ' 回');
     }
     if (bits.length) {
       line += '（' + bits.join('・') + '）';
@@ -1034,14 +1116,14 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   let sleepDays = 0;
   weekDates.forEach(dateKey => {
     const row = sleepByDate[dateKey];
-    if (!row || weeklyRssNum_(row.duration_minutes_est) === null) {
+    if (!row || weeklyRssCount_(row.duration_minutes_est) === null) {
       lines.push(weeklyRssDayLabel_(dateKey) + ' 記録なし');
       return;
     }
-    const duration = weeklyRssNum_(row.duration_minutes_est);
+    const duration = weeklyRssCount_(row.duration_minutes_est);
     lines.push(
-      weeklyRssDayLabel_(dateKey) + ' ' + (row.sleep_start_est || '—') + '〜' +
-        (row.sleep_end_est || '—') + '（' + weeklyRssFmtDuration_(duration) + '）',
+      weeklyRssDayLabel_(dateKey) + ' ' + (weeklyRssText_(row.sleep_start_est) || '—') + '〜' +
+        (weeklyRssText_(row.sleep_end_est) || '—') + '（' + weeklyRssFmtDuration_(duration) + '）',
     );
     totalSleep += duration;
     sleepDays += 1;
@@ -1053,9 +1135,9 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
 
   // --- Lab results ------------------------------------------------------
   section('検査結果');
-  const weekLabs = (data.lab_results || []).filter(row => {
+  const weekLabs = sheetRows('lab_results').filter(row => {
     const date = weeklyRssDate10_(row && row.date);
-    return date >= slot.weekStartKey && date <= slot.weekEndKey;
+    return isRealDateKey_(date) && date >= slot.weekStartKey && date <= slot.weekEndKey;
   });
   if (weekLabs.length) {
     const labDates = [...new Set(weekLabs.map(row => weeklyRssDate10_(row.date)))].sort();
@@ -1064,12 +1146,14 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
       weekLabs
         .filter(row => weeklyRssDate10_(row.date) === dateKey)
         .forEach(row => {
-          let line = '・' + (row.item || '') + ' ' + (row.value === null || row.value === undefined ? '' : row.value);
-          if (row.unit) {
-            line += ' ' + row.unit;
+          let line = '・' + weeklyRssText_(row.item) + ' ' + weeklyRssText_(row.value);
+          const unit = weeklyRssText_(row.unit);
+          if (unit) {
+            line += ' ' + unit;
           }
-          if (row.flag) {
-            line += '（' + row.flag + '）';
+          const flag = weeklyRssText_(row.flag);
+          if (flag) {
+            line += '（' + flag + '）';
           }
           lines.push(line);
         });
