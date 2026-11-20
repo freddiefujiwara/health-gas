@@ -668,7 +668,14 @@ const weeklyRssDate10_ = value => weeklyRssText_(value).slice(0, 10);
 
 const weeklyRssFmtInt_ = value => String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-const weeklyRssFmt1_ = value => (Math.round(value * 10) / 10).toFixed(1);
+// Round to one decimal. The scale-up must not manufacture Infinity
+// out of a finite value: above ~1.8e307, value * 10 overflows and
+// toFixed would print "Infinity". Such values keep their own digits
+// (toFixed renders them in exponential form, still finite).
+const weeklyRssFmt1_ = value => {
+  const rounded = Math.round(value * 10) / 10;
+  return (Number.isFinite(rounded) ? rounded : value).toFixed(1);
+};
 
 const weeklyRssFmtSignedInt_ = value =>
   (value > 0 ? '+' : value < 0 ? '-' : '±') + weeklyRssFmtInt_(Math.abs(value));
