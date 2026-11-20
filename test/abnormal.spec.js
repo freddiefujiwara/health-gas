@@ -271,6 +271,20 @@ describe("buildWeeklyReviewItem_ with deformed measurements", () => {
     expect(item.descriptionText).not.toContain("開始時（");
   });
 
+  it("does not let the one-decimal formatter overflow a finite percentage into Infinity", () => {
+    // Regression (post-merge CI failure of PR #31, seed-dependent):
+    // a denormal-tiny start weight makes the cumulative percentage
+    // exactly Number.MAX_VALUE — finite, so the isFinite guard on the
+    // percentage passed — but weeklyRssFmt1_ multiplied it by 10 for
+    // rounding, overflowed, and printed "+Infinity%".
+    const item = build({
+      body_composition: [{ date: "2020-01-01", weight_kg: 30 }],
+      goals_settings: [{ item: "開始時体重", value: 1.6688053938804013e-305 }],
+    });
+    expect(item.descriptionText).not.toContain("Infinity");
+    expect(item.descriptionText).toContain("開始時（");
+  });
+
   it("omits a goal forecast whose date overflows instead of printing a NaN date", () => {
     // Found by the property suite: a near-zero average balance makes
     // the day count overflow the Date range (NaN/NaN/NaN on the
