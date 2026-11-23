@@ -800,7 +800,11 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   const weekBody = bodyRows.filter(row => row.date >= slot.weekStartKey && row.date <= slot.weekEndKey);
   if (weekBody.length) {
     weekBody.forEach(row => {
-      const parts = ['体重 ' + weeklyRssFmt1_(row.weight_kg) + ' kg'];
+      const weightKg = weeklyRssNum_(row.weight_kg);
+      if (weightKg === null) {
+        return;
+      }
+      const parts = ['体重 ' + weeklyRssFmt1_(weightKg) + ' kg'];
       if (weeklyRssNum_(row.body_fat_percent) !== null) {
         parts.push('体脂肪率 ' + weeklyRssFmt1_(row.body_fat_percent) + '%');
       }
@@ -915,7 +919,8 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
   // the completed balances recorded after it, converted with the
   // same factor (the end point of the front-end's actual-balance
   // projection).
-  if (latest) {
+  const latestWeightKg = latest ? weeklyRssNum_(latest.weight_kg) : null;
+  if (latest && latestWeightKg !== null) {
     let sumAfterAnchor = 0;
     let lastAfterAnchorDate = null;
     completedUpToWeek.forEach(row => {
@@ -927,27 +932,27 @@ export const buildWeeklyReviewItem_ = (data, nowMs) => {
     });
     if (lastAfterAnchorDate) {
       predictedNowInfo = {
-        weightKg: latest.weight_kg + sumAfterAnchor / kcalPerKg,
+        weightKg: latestWeightKg + sumAfterAnchor / kcalPerKg,
         asOf: lastAfterAnchorDate,
         sumKcal: sumAfterAnchor,
       };
       lines.push(
         '出力時点の推定体重：' + weeklyRssFmt1_(predictedNowInfo.weightKg) + ' kg（' +
           weeklyRssMd_(lastAfterAnchorDate) + ' 時点。最新実測 ' + weeklyRssMd_(latest.date) +
-          ' の ' + weeklyRssFmt1_(latest.weight_kg) + ' kg から、完了した収支の累計 ' +
+          ' の ' + weeklyRssFmt1_(latestWeightKg) + ' kg から、完了した収支の累計 ' +
           weeklyRssFmtSignedInt_(sumAfterAnchor) + ' kcal を実測換算で換算）',
       );
     }
   }
-  if (latest && avgBalance30 !== null) {
-    const predicted30 = latest.weight_kg + (avgBalance30 * 30) / kcalPerKg;
+  if (latest && latestWeightKg !== null && avgBalance30 !== null) {
+    const predicted30 = latestWeightKg + (avgBalance30 * 30) / kcalPerKg;
     lines.push('このペースでの30日後予測：' + weeklyRssFmt1_(predicted30) + ' kg');
     if (avgBalance30 < 0) {
       const reachLine = (label, goalKg) => {
         if (goalKg === null) {
           return null;
         }
-        const remaining = latest.weight_kg - goalKg;
+        const remaining = latestWeightKg - goalKg;
         if (remaining <= 0) {
           return label + ' ' + weeklyRssFmt1_(goalKg) + ' kg には到達済みです';
         }
