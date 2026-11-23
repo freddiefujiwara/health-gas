@@ -1434,3 +1434,104 @@ function setupWorkHoursTrigger() {
     .nearMinute(30)
     .create();
 }
+
+// --- Sheet numeric normalization -------------------------------------
+// Cells written by outside tools as text (a RAW string write) come
+// back from getValues() as strings, and `+` on a string concatenates
+// instead of adding (the 2026-11-23 weekly RSS outage). A daily sweep
+// rewrites numeric-looking strings in known numeric columns as real
+// numbers. Sheets and columns that legitimately hold text are not
+// listed here and are never touched — most importantly lab_results,
+// whose value column mixes numbers with text results.
+const NORMALIZE_NUMERIC_COLUMNS_ = {
+  body_composition: [
+    'weight_kg', 'bmi', 'body_fat_percent', 'fat_mass_kg', 'muscle_mass_kg',
+    'lean_mass_kg', 'body_water_kg', 'protein_mass_kg', 'estimated_bone_mass_kg',
+    'basal_metabolic_rate_kcal', 'visceral_fat_level', 'smi', 'leg_muscle_score',
+    'height_cm', 'registered_height_cm', 'waist_cm', 'clothing_weight_kg',
+    'athlete_index', 'appendicular_skeletal_muscle_mass_kg', 'asm_bw_ratio',
+    'mm_h2', 'mm_bw_ratio',
+  ],
+  body_segments: ['muscle_mass_kg', 'fat_percent', 'fat_mass_kg'],
+  daily_nutrition: [
+    'intake_kcal', 'expenditure_kcal', 'balance_kcal', 'protein_g', 'fat_g',
+    'carbohydrates_g', 'salt_g', 'calcium_mg', 'iron_mg', 'vitamin_c_mg',
+  ],
+  steps: ['steps', 'distance_walking_running_m', 'flights_climbed'],
+  chat_activity: [
+    'user_message_count', 'engaged_minutes_est', 'session_count',
+    'late_night_message_count',
+  ],
+  chat_activity_hours: ['hour', 'user_message_count', 'engaged_minutes_est'],
+  chat_activity_daily_hours: ['hour', 'user_message_count', 'engaged_minutes_est'],
+  sleep_estimates: ['duration_minutes_est'],
+  work_hours: ['net_work_minutes', 'pair_count'],
+};
+
+// Pure cell rule: a string that is exactly a numeric literal becomes
+// a number; anything else ('', '陰性', '1,234', dates, times) is not
+// a candidate. Returns null when the value needs no rewrite.
+export const normalizedNumberValue_ = value => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const text = value.trim();
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) {
+    return null;
+  }
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+};
+
+// Pure sweep over a values grid (header row first). Returns the
+// rewrites as {row, col, value} with 0-based grid indexes.
+export const collectNumericFixes_ = (values, numericColumns) => {
+  if (!Array.isArray(values) || values.length < 2) {
+    return [];
+  }
+  const header = values[0];
+  const colIndexes = numericColumns
+    .map(name => header.indexOf(name))
+    .filter(index => index >= 0);
+  const fixes = [];
+  for (let r = 1; r < values.length; r += 1) {
+    colIndexes.forEach(c => {
+      const num = normalizedNumberValue_(values[r][c]);
+      if (num !== null) {
+        fixes.push({ row: r, col: c, value: num });
+      }
+    });
+  }
+  return fixes;
+};
+
+// Trigger entry point: rewrites text-stored numbers across the data
+// sheets. Idempotent; a second run on clean data changes nothing.
+function normalizeSheetNumbers() {
+  let total = 0;
+  Object.keys(NORMALIZE_NUMERIC_COLUMNS_).forEach(name => {
+    const sheet = getSheet(name);
+    if (!sheet) {
+      return;
+    }
+    const values = sheet.getDataRange().getValues();
+    collectNumericFixes_(values, NORMALIZE_NUMERIC_COLUMNS_[name]).forEach(fix => {
+      sheet.getRange(fix.row + 1, fix.col + 1).setValue(fix.value);
+      total += 1;
+    });
+  });
+  return total;
+}
+
+// Run once from the editor to install the daily ~04:00 JST trigger.
+function setupNormalizeTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === 'normalizeSheetNumbers')
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger('normalizeSheetNumbers')
+    .timeBased()
+    .everyDays(1)
+    .atHour(4)
+    .nearMinute(0)
+    .create();
+}
