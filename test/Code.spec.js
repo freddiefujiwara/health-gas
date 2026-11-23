@@ -93,7 +93,7 @@ global.Logger = {
 // configured by default and the data tests authenticate with the mocked ID
 // token (see authedEvent below).
 const scriptProperties = {
-  AVAILABLE_GMAILS: "owner@example.com",
+  AVAILABLE_GMAILS: "zegenvs@gmail.com",
   GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
 };
 global.PropertiesService = {
@@ -107,7 +107,7 @@ const tokenInfoPayload = {
   aud: "test-client-id",
   exp: String(Math.floor(Date.now() / 1000) + 3600),
   email_verified: "true",
-  email: "owner@example.com",
+  email: "zegenvs@gmail.com",
   sub: "1234567890",
 };
 global.UrlFetchApp = {
@@ -211,7 +211,7 @@ describe("doGet authentication", () => {
       delete scriptProperties[key];
     }
     Object.assign(scriptProperties, {
-      AVAILABLE_GMAILS: "owner@example.com",
+      AVAILABLE_GMAILS: "zegenvs@gmail.com",
       GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
     });
     global.UrlFetchApp.fetch.mockImplementation(() => ({
@@ -404,7 +404,7 @@ describe("doGet share sessions", () => {
       delete scriptProperties[key];
     }
     Object.assign(scriptProperties, {
-      AVAILABLE_GMAILS: "owner@example.com",
+      AVAILABLE_GMAILS: "zegenvs@gmail.com",
       GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
     });
     global.UrlFetchApp.fetch.mockImplementation(() => ({
@@ -575,7 +575,7 @@ describe("doGet owner sessions", () => {
       delete scriptProperties[key];
     }
     Object.assign(scriptProperties, {
-      AVAILABLE_GMAILS: "owner@example.com",
+      AVAILABLE_GMAILS: "zegenvs@gmail.com",
       GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
     });
     global.UrlFetchApp.fetch.mockImplementation(() => ({
@@ -910,6 +910,50 @@ describe("buildWeeklyReviewItem_", () => {
       "出力時点の推定体重：91.9 kg（11/9 時点。最新実測 11/7 の 92.0 kg から、完了した収支の累計 -1,000 kcal を実測換算で換算）",
     );
     expect(item.descriptionText).toContain("推定体重は 91.9 kg。");
+  });
+
+  it("tolerates string-typed body values (cells stored as text)", () => {
+    // Sheet cells written as text come back as strings. Adding the
+    // anchor weight to the balance quotient must not concatenate.
+    const item = buildWeeklyReviewItem_(
+      {
+        body_composition: [{ date: "2026-11-07", weight_kg: "92.0" }],
+        daily_nutrition: [
+          { date: "2026-11-08", intake_kcal: 2000, expenditure_kcal: 2500, balance_kcal: -500, completeness: "完了" },
+          { date: "2026-11-09", intake_kcal: 2000, expenditure_kcal: 2500, balance_kcal: -500, completeness: "完了" },
+        ],
+        steps: [],
+        chat_activity: [],
+        sleep_estimates: [],
+        lab_results: [],
+        goals_settings: [],
+      },
+      nowMs,
+    );
+    expect(item.descriptionText).toContain(
+      "出力時点の推定体重：91.9 kg（11/9 時点。最新実測 11/7 の 92.0 kg から、完了した収支の累計 -1,000 kcal を実測換算で換算）",
+    );
+    expect(item.descriptionText).toContain("このペースでの30日後予測：");
+  });
+
+  it("renders an in-week measurement whose cells are strings", () => {
+    const item = buildWeeklyReviewItem_(
+      {
+        body_composition: [
+          { date: "2026-11-07", weight_kg: 92.0 },
+          { date: "2026-11-14", weight_kg: "90.9", body_fat_percent: "28.0", fat_mass_kg: "25.5", muscle_mass_kg: "62.0", visceral_fat_level: "17", bmi: "32.2" },
+        ],
+        daily_nutrition: [],
+        steps: [],
+        chat_activity: [],
+        sleep_estimates: [],
+        lab_results: [],
+        goals_settings: [],
+      },
+      nowMs,
+    );
+    expect(item.descriptionText).toContain("11/14（土） 体重 90.9 kg・体脂肪率 28.0%・脂肪量 25.5 kg・筋肉量 62.0 kg・内臓脂肪レベル 17・BMI 32.2");
+    expect(item.descriptionText).toContain("最新の実測：11/14 90.9 kg（前回 11/7 比 -1.1 kg）");
   });
 });
 
