@@ -9,7 +9,7 @@ records).
 
 - Provides a JSON and JSONP web API to read the sheet's content.
 - Can return all sheets at once, or a single sheet via the `sheet` parameter.
-- No authentication for now (same style as `list-of-stuff-gas`).
+- Requires authentication: a verified Google ID token, an owner session token, or a share token.
 - Includes a local testing setup using Vitest.
 - Easy to build and deploy with npm scripts.
 - Provides an OpenAPI specification in `openapi.yaml`.
@@ -20,16 +20,23 @@ records).
 
 This function works as a web API. When you access the script's deployment URL,
 it reads data from the sheets in the `health` spreadsheet (`overview`,
-`daily_nutrition`, `steps`, `meals`, `period_summaries`, `body_composition`,
-`body_segments`, `medication_plan`, `medication_log`, `goals_settings`,
-`data_dictionary`) and returns them as a single JSON object keyed by sheet
-name. The first row of each sheet is used as the keys.
+`daily_nutrition`, `steps`, `meals`, `body_composition`, `body_segments`,
+`goals_settings`, `data_dictionary`, `lab_results`, `chat_activity`,
+`chat_activity_hours`, `chat_activity_daily_hours`, `sleep_estimates`,
+`work_hours`, `home_hours`, `home_segments`) and returns them as a single
+JSON object keyed by sheet name. The first row of each sheet is used as the keys.
 
 - Add `?sheet=steps` to get only one sheet (returned as an array of rows).
 - Add `?callback=myFunction` for a JSONP response.
 
-There is no authentication for now, so anyone who knows the deployment URL
-can read the data. Keep the URL private.
+Every request requires a verified Google ID token, an owner session
+token, or a share token; unauthenticated requests are rejected.
+
+- Add `?scope=activity` for the smaller activity-only payload (activity,
+  sleep, and work/home hours sheets).
+- Add `?action=weekly_rss` for the weekly review RSS feed.
+- Responses are served from a payload cache that a time-driven trigger
+  refreshes every 5 minutes.
 
 ## API Specification
 

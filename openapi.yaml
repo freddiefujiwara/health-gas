@@ -6,7 +6,7 @@ info:
     Read-only web API for reading health data from the "health" Google Sheet
     via a Google Apps Script deployment. The API supports JSON and JSONP
     responses, depending on whether a `callback` query parameter is supplied.
-    There is no authentication for now.
+    Every request requires a verified Google ID token, an owner session token, or a share token.
 servers:
   - url: https://script.google.com/macros/s/AKfycbx_placeholder
     description: Google Apps Script web app deployment (replace with the actual deployment URL)
@@ -30,11 +30,8 @@ paths:
               - daily_nutrition
               - steps
               - meals
-              - period_summaries
               - body_composition
               - body_segments
-              - medication_plan
-              - medication_log
               - goals_settings
               - data_dictionary
               - lab_results
@@ -42,6 +39,9 @@ paths:
               - chat_activity_hours
               - chat_activity_daily_hours
               - sleep_estimates
+              - work_hours
+              - home_hours
+              - home_segments
           description: Name of a single sheet to return.
         - in: query
           name: callback
