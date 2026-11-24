@@ -362,16 +362,16 @@ const readSheetObjects_ = name => {
 const PAYLOAD_CACHE_TTL_SECONDS = 600;
 const PAYLOAD_CACHE_KEY = 'payloadcache:full';
 
-const readCachedPayload_ = () => {
+const readCachedPayload_ = cacheKey => {
   try {
     const cache = CacheService.getScriptCache();
-    const count = Number(cache.get(`${PAYLOAD_CACHE_KEY}:count`) || 0);
+    const count = Number(cache.get(`${cacheKey}:count`) || 0);
     if (count <= 0) {
       return null;
     }
     const keys = [];
     for (let i = 0; i < count; i += 1) {
-      keys.push(`${PAYLOAD_CACHE_KEY}:${i}`);
+      keys.push(`${cacheKey}:${i}`);
     }
     const chunks = cache.getAll(keys);
     const joined = keys.map(key => chunks[key] || '').join('');
@@ -394,16 +394,16 @@ const buildPayload_ = () => {
   return data;
 };
 
-const writeCachedPayload_ = data => {
+const writeCachedPayload_ = (data, cacheKey) => {
   try {
     const json = JSON.stringify(data);
     const entries = {};
     let count = 0;
     for (let i = 0; i < json.length; i += SHEET_CACHE_CHUNK_SIZE) {
-      entries[`${PAYLOAD_CACHE_KEY}:${count}`] = json.slice(i, i + SHEET_CACHE_CHUNK_SIZE);
+      entries[`${cacheKey}:${count}`] = json.slice(i, i + SHEET_CACHE_CHUNK_SIZE);
       count += 1;
     }
-    entries[`${PAYLOAD_CACHE_KEY}:count`] = String(count);
+    entries[`${cacheKey}:count`] = String(count);
     CacheService.getScriptCache().putAll(entries, PAYLOAD_CACHE_TTL_SECONDS);
   } catch (error) {
     // Cache is best-effort.
@@ -411,17 +411,94 @@ const writeCachedPayload_ = data => {
 };
 
 const readPayload_ = () => {
-  const cached = readCachedPayload_();
+  const cached = readCachedPayload_(PAYLOAD_CACHE_KEY);
   if (cached) {
     return cached;
   }
   const data = buildPayload_();
-  writeCachedPayload_(data);
+  writeCachedPayload_(data, PAYLOAD_CACHE_KEY);
+  return data;
+};
+
+// --- Activity-scope payload ----------------------------------------------
+// The activity page does not need the lab results, body composition or
+// nutrition sheets, so it gets its own smaller payload. The hourly rows
+// grow by 24 rows a day forever, so only a recent window of them is
+// sent; per-date late-night totals for the whole history ride along in
+// late_night_by_date so older days keep their late-night figures.
+const ACTIVITY_PAYLOAD_CACHE_KEY = 'payloadcache:activity';
+const ACTIVITY_SHEET_NAMES = [
+  'chat_activity',
+  'chat_activity_hours',
+  'chat_activity_daily_hours',
+  'sleep_estimates',
+  'work_hours',
+  'home_hours',
+  'home_segments',
+];
+const ACTIVITY_DAILY_HOURS_WINDOW_DAYS = 62;
+const LATE_NIGHT_HOURS_ = [23, 0, 1, 2, 3, 4];
+
+const computeLateNightByDate_ = dailyRows => {
+  const totals = new Map();
+  for (const row of dailyRows || []) {
+    if (!row || !row.date || !LATE_NIGHT_HOURS_.includes(Number(row.hour))) {
+      continue;
+    }
+    const minutes = Number(row.engaged_minutes_est);
+    if (!Number.isFinite(minutes)) {
+      continue;
+    }
+    const dateKey = String(row.date).slice(0, 10);
+    totals.set(dateKey, (totals.get(dateKey) || 0) + minutes);
+  }
+  return [...totals.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([date, minutes]) => ({ date, late_night_minutes: minutes }));
+};
+
+const windowDailyHours_ = rows => {
+  if (!rows || rows.length === 0) {
+    return [];
+  }
+  let latest = '';
+  for (const row of rows) {
+    const dateKey = String(row.date).slice(0, 10);
+    if (dateKey > latest) {
+      latest = dateKey;
+    }
+  }
+  const cutoff = addDays_(latest, -(ACTIVITY_DAILY_HOURS_WINDOW_DAYS - 1));
+  return rows.filter(row => String(row.date).slice(0, 10) >= cutoff);
+};
+
+const buildActivityPayload_ = () => {
+  const data = {};
+  ACTIVITY_SHEET_NAMES.forEach(name => {
+    const objects = readSheetObjects_(name);
+    if (objects) {
+      data[name] = objects;
+    }
+  });
+  const dailyRows = data.chat_activity_daily_hours || [];
+  data.late_night_by_date = computeLateNightByDate_(dailyRows);
+  data.chat_activity_daily_hours = windowDailyHours_(dailyRows);
+  return data;
+};
+
+const readActivityPayload_ = () => {
+  const cached = readCachedPayload_(ACTIVITY_PAYLOAD_CACHE_KEY);
+  if (cached) {
+    return cached;
+  }
+  const data = buildActivityPayload_();
+  writeCachedPayload_(data, ACTIVITY_PAYLOAD_CACHE_KEY);
   return data;
 };
 
 function refreshPayloadCache() {
-  writeCachedPayload_(buildPayload_());
+  writeCachedPayload_(buildPayload_(), PAYLOAD_CACHE_KEY);
+  writeCachedPayload_(buildActivityPayload_(), ACTIVITY_PAYLOAD_CACHE_KEY);
 }
 
 function setupPayloadCacheTrigger() {
@@ -587,7 +664,7 @@ export function doGet(e) {
     return createJsonpOutput(objects, params.callback);
   }
 
-  const data = readPayload_();
+  const data = params.scope === 'activity' ? readActivityPayload_() : readPayload_();
   if (shareSession) {
     data._share = { expires_at: shareSession.expires_at };
   }

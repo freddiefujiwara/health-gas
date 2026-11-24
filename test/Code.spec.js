@@ -172,6 +172,38 @@ describe("doGet", () => {
     expect(data.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
+  it("returns only the activity sheets for scope=activity, with windowed hours and late-night totals", () => {
+    const sheetWith = (rows) => ({ getDataRange: () => ({ getValues: () => rows }) });
+    mockSpreadsheet.getSheetByName.mockImplementation((name) => {
+      if (name === "chat_activity_daily_hours") {
+        return sheetWith([
+          ["date", "hour", "user_message_count", "engaged_minutes_est"],
+          ["2026-08-23", 23, 3, 30],
+          ["2026-08-23", 5, 9, 10],
+          ["2026-11-20", 0, 2, 45],
+          ["2026-11-20", 12, 7, 60],
+        ]);
+      }
+      return sheetWith([
+        ["date", "value"],
+        ["2026-11-20", 1],
+      ]);
+    });
+    doGet(authedEvent({ scope: "activity" }));
+    const data = JSON.parse(mockContentService.setContent.mock.calls[0][0]);
+    expect(data.lab_results).toBeUndefined();
+    expect(data.body_composition).toBeUndefined();
+    expect(data.chat_activity).toEqual([{ date: "2026-11-20", value: 1 }]);
+    expect(data.late_night_by_date).toEqual([
+      { date: "2026-08-23", late_night_minutes: 30 },
+      { date: "2026-11-20", late_night_minutes: 45 },
+    ]);
+    expect(data.chat_activity_daily_hours).toEqual([
+      { date: "2026-11-20", hour: 0, user_message_count: 2, engaged_minutes_est: 45 },
+      { date: "2026-11-20", hour: 12, user_message_count: 7, engaged_minutes_est: 60 },
+    ]);
+  });
+
   it("should return a single sheet when sheet parameter is provided", () => {
     doGet(authedEvent({ sheet: "steps" }));
     const content = mockContentService.setContent.mock.calls[0][0];
