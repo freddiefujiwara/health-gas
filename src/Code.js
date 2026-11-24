@@ -351,6 +351,86 @@ const readSheetObjects_ = name => {
   return objects;
 };
 
+// --- Assembled payload cache -------------------------------------------
+// Even with every sheet cached, a full-payload request still walks all
+// sheets, parses each cached sheet JSON and recomputes period_summaries,
+// which takes seconds. The assembled payload is therefore cached as one
+// chunked JSON string and refreshed by a time trigger every few minutes,
+// so dashboard opens are normally served from this single cache read.
+// The caller-specific _share field is attached per request and is never
+// part of the cached payload.
+const PAYLOAD_CACHE_TTL_SECONDS = 600;
+const PAYLOAD_CACHE_KEY = 'payloadcache:full';
+
+const readCachedPayload_ = () => {
+  try {
+    const cache = CacheService.getScriptCache();
+    const count = Number(cache.get(`${PAYLOAD_CACHE_KEY}:count`) || 0);
+    if (count <= 0) {
+      return null;
+    }
+    const keys = [];
+    for (let i = 0; i < count; i += 1) {
+      keys.push(`${PAYLOAD_CACHE_KEY}:${i}`);
+    }
+    const chunks = cache.getAll(keys);
+    const joined = keys.map(key => chunks[key] || '').join('');
+    return joined ? JSON.parse(joined) : null;
+  } catch (error) {
+    // Cache unavailable or corrupted: the caller rebuilds the payload.
+    return null;
+  }
+};
+
+const buildPayload_ = () => {
+  const data = {};
+  SHEET_NAMES.forEach(name => {
+    const objects = readSheetObjects_(name);
+    if (objects) {
+      data[name] = objects;
+    }
+  });
+  data.period_summaries = computePeriodSummaries_(data.daily_nutrition || []);
+  return data;
+};
+
+const writeCachedPayload_ = data => {
+  try {
+    const json = JSON.stringify(data);
+    const entries = {};
+    let count = 0;
+    for (let i = 0; i < json.length; i += SHEET_CACHE_CHUNK_SIZE) {
+      entries[`${PAYLOAD_CACHE_KEY}:${count}`] = json.slice(i, i + SHEET_CACHE_CHUNK_SIZE);
+      count += 1;
+    }
+    entries[`${PAYLOAD_CACHE_KEY}:count`] = String(count);
+    CacheService.getScriptCache().putAll(entries, PAYLOAD_CACHE_TTL_SECONDS);
+  } catch (error) {
+    // Cache is best-effort.
+  }
+};
+
+const readPayload_ = () => {
+  const cached = readCachedPayload_();
+  if (cached) {
+    return cached;
+  }
+  const data = buildPayload_();
+  writeCachedPayload_(data);
+  return data;
+};
+
+function refreshPayloadCache() {
+  writeCachedPayload_(buildPayload_());
+}
+
+function setupPayloadCacheTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === 'refreshPayloadCache')
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+  ScriptApp.newTrigger('refreshPayloadCache').timeBased().everyMinutes(5).create();
+}
+
 // A JSONP callback must be a plain JavaScript identifier path; anything
 // else would be reflected verbatim into a JavaScript response (the same
 // validation bucket-list-gas applies).
@@ -507,14 +587,7 @@ export function doGet(e) {
     return createJsonpOutput(objects, params.callback);
   }
 
-  const data = {};
-  SHEET_NAMES.forEach(name => {
-    const objects = readSheetObjects_(name);
-    if (objects) {
-      data[name] = objects;
-    }
-  });
-  data.period_summaries = computePeriodSummaries_(data.daily_nutrition || []);
+  const data = readPayload_();
   if (shareSession) {
     data._share = { expires_at: shareSession.expires_at };
   }

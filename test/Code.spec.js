@@ -139,6 +139,34 @@ describe("doGet", () => {
     expect(data.daily_nutrition).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
+  it("serves the full payload from the assembled cache on later requests", () => {
+    doGet(authedEvent());
+    const first = JSON.parse(mockContentService.setContent.mock.calls[0][0]);
+    expect(first.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+    // Drop only the per-sheet caches and change the sheet contents: the
+    // assembled payload cache must still serve the original payload.
+    for (const key of [...cacheStore.keys()]) {
+      if (key.startsWith("sheetcache:")) {
+        cacheStore.delete(key);
+      }
+    }
+    mockRange.getValues.mockReturnValue([
+      ["date", "steps"],
+      ["2026-08-24", 7000],
+    ]);
+    doGet(authedEvent());
+    const second = JSON.parse(mockContentService.setContent.mock.calls[1][0]);
+    expect(second.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+  });
+
+  it("rebuilds the payload when the assembled cache is corrupted", () => {
+    cacheStore.set("payloadcache:full:count", "1");
+    cacheStore.set("payloadcache:full:0", "not-json");
+    doGet(authedEvent());
+    const data = JSON.parse(mockContentService.setContent.mock.calls[0][0]);
+    expect(data.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+  });
+
   it("should return a single sheet when sheet parameter is provided", () => {
     doGet(authedEvent({ sheet: "steps" }));
     const content = mockContentService.setContent.mock.calls[0][0];
