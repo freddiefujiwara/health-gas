@@ -271,6 +271,16 @@ const requireOwnerAuth_ = e => {
 
 const getSheet = name => getSpreadsheet().getSheetByName(name);
 
+// Sheets stores a time-only cell (e.g. "08:11" written by the
+// work/home hours upserts) as a Date on its epoch day, 1899-12-30.
+// Those cells are exposed as "HH:mm", not as a full timestamp on a
+// meaningless date.
+export const isTimeOnlyDate_ = value =>
+  value instanceof Date &&
+  value.getFullYear() === 1899 &&
+  value.getMonth() === 11 &&
+  value.getDate() === 30;
+
 // Helper to convert 2D array from a sheet to an array of objects
 const sheetValuesToObjects = values => {
   const headers = values.shift();
@@ -280,7 +290,9 @@ const sheetValuesToObjects = values => {
       headers.reduce((obj, header, index) => {
         const value = row[index];
         if (value instanceof Date) {
-          obj[header] = Utilities.formatDate(value, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ssXXX");
+          obj[header] = isTimeOnlyDate_(value)
+            ? Utilities.formatDate(value, 'Asia/Tokyo', 'HH:mm')
+            : Utilities.formatDate(value, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ssXXX");
         } else {
           obj[header] = value === '' || value === undefined ? null : value;
         }
