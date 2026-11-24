@@ -24,6 +24,7 @@ const SHEET_NAMES = [
   "sleep_estimates",
   "work_hours",
   "home_hours",
+  "home_segments",
 ];
 
 const getSpreadsheet = () =>
@@ -1437,7 +1438,13 @@ const HOME_HOURS_HEADERS = [
   'notes',
 ];
 
-// Pure summary of one JST day's home events.
+// Pure summary of one JST day's home events. Besides the totals it
+// returns the day's timeline as segments (minutes from midnight,
+// state 'home' or 'out') so the dashboard can show the flow of the
+// day. Segments start at the day's first event when the starting
+// state is unknown (the earlier part of the day is simply not
+// covered); when the event order is broken they are dropped, since
+// a guessed sequence would be worse than none.
 export const summarizeHomeDay_ = (events, dateKey) => {
   const dayStart = Date.parse(dateKey + 'T00:00:00+09:00');
   const dayEnd = dayStart + 24 * 60 * 60 * 1000;
@@ -1455,7 +1462,7 @@ export const summarizeHomeDay_ = (events, dateKey) => {
   const before = home.filter(ev => ev.at < dayStart);
   const during = home.filter(ev => ev.at >= dayStart && ev.at < dayEnd);
   if (!before.length && !during.length) {
-    return { status: '記録なし', homeMinutes: null, firstLeave: '', lastArrive: '', outingCount: 0 };
+    return { status: '記録なし', homeMinutes: null, firstLeave: '', lastArrive: '', outingCount: 0, segments: [] };
   }
   let atHome = null;
   if (before.length) {
@@ -1467,6 +1474,10 @@ export const summarizeHomeDay_ = (events, dateKey) => {
   let firstLeave = '';
   let lastArrive = '';
   let outingCount = 0;
+  let state = atHome === null ? null : atHome ? 'home' : 'out';
+  let segStart = dayStart;
+  let segmentsBroken = false;
+  const rawSegments = [];
   during.forEach(ev => {
     if (ev.action === 'leave') {
       if (!firstLeave) {
@@ -1479,6 +1490,16 @@ export const summarizeHomeDay_ = (events, dateKey) => {
         openAt = null;
         outingCount += 1;
       }
+      if (state === 'home') {
+        rawSegments.push({ startAt: segStart, endAt: ev.at, state: 'home' });
+        state = 'out';
+        segStart = ev.at;
+      } else if (state === 'out') {
+        segmentsBroken = true;
+      } else {
+        state = 'out';
+        segStart = ev.at;
+      }
       atHome = false;
     } else {
       lastArrive = jstHhmm_(ev.at);
@@ -1487,12 +1508,34 @@ export const summarizeHomeDay_ = (events, dateKey) => {
       } else {
         openAt = ev.at;
       }
+      if (state === 'out') {
+        rawSegments.push({ startAt: segStart, endAt: ev.at, state: 'out' });
+        state = 'home';
+        segStart = ev.at;
+      } else if (state === 'home') {
+        segmentsBroken = true;
+      } else {
+        state = 'home';
+        segStart = ev.at;
+      }
       atHome = true;
     }
   });
   if (openAt !== null) {
     totalMinutes += (dayEnd - openAt) / 60000;
   }
+  if (state !== null) {
+    rawSegments.push({ startAt: segStart, endAt: dayEnd, state });
+  }
+  const segments = segmentsBroken
+    ? []
+    : rawSegments
+        .map(seg => ({
+          startMinute: Math.round((seg.startAt - dayStart) / 60000),
+          endMinute: Math.round((seg.endAt - dayStart) / 60000),
+          state: seg.state,
+        }))
+        .filter(seg => seg.endMinute > seg.startMinute);
   const status = complete ? '確定' : '未確定';
   return {
     status,
@@ -1500,6 +1543,7 @@ export const summarizeHomeDay_ = (events, dateKey) => {
     firstLeave,
     lastArrive,
     outingCount,
+    segments,
   };
 };
 
@@ -1542,8 +1586,60 @@ const upsertHomeHoursRow_ = (dateKey, summary) => {
   }
 };
 
+const HOME_SEGMENTS_SHEET_NAME = 'home_segments';
+const HOME_SEGMENTS_HEADERS = [
+  'date',
+  'start_minute',
+  'end_minute',
+  'state',
+  'minutes',
+  'source',
+  'updated_at',
+];
+
+const ensureHomeSegmentsSheet_ = () => {
+  let sheet = getSheet(HOME_SEGMENTS_SHEET_NAME);
+  if (!sheet) {
+    sheet = getSpreadsheet().insertSheet(HOME_SEGMENTS_SHEET_NAME);
+    sheet.getRange(1, 1, 1, HOME_SEGMENTS_HEADERS.length).setValues([HOME_SEGMENTS_HEADERS]);
+  }
+  return sheet;
+};
+
+// Segments for a day are rewritten as a set: the day's old rows are
+// deleted and the freshly computed ones appended.
+const replaceHomeSegments_ = (dateKey, segments) => {
+  const sheet = ensureHomeSegmentsSheet_();
+  const values = sheet.getDataRange().getValues();
+  const staleRows = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const cell = values[i][0];
+    const key = cell instanceof Date ? jstDateKey_(cell.getTime()) : String(cell).slice(0, 10);
+    if (key === dateKey) {
+      staleRows.push(i + 1);
+    }
+  }
+  staleRows
+    .sort((a, b) => b - a)
+    .forEach(rowNumber => sheet.deleteRow(rowNumber));
+  const nowIso = new Date().toISOString();
+  segments.forEach(seg => {
+    sheet.appendRow([
+      dateKey,
+      seg.startMinute,
+      seg.endMinute,
+      seg.state,
+      seg.endMinute - seg.startMinute,
+      'presence-gas',
+      nowIso,
+    ]);
+  });
+};
+
 const recordHomeHoursFromEvents_ = (events, dateKey) => {
-  upsertHomeHoursRow_(dateKey, summarizeHomeDay_(events, dateKey));
+  const summary = summarizeHomeDay_(events, dateKey);
+  upsertHomeHoursRow_(dateKey, summary);
+  replaceHomeSegments_(dateKey, summary.segments);
 };
 
 // Trigger entry point: records yesterday (JST). A failed fetch leaves
@@ -1636,6 +1732,7 @@ const NORMALIZE_NUMERIC_COLUMNS_ = {
   chat_activity_daily_hours: ['hour', 'user_message_count', 'engaged_minutes_est'],
   sleep_estimates: ['duration_minutes_est'],
   work_hours: ['net_work_minutes', 'pair_count'],
+  home_segments: ['start_minute', 'end_minute', 'minutes'],
 };
 
 // Pure cell rule: a string that is exactly a numeric literal becomes
