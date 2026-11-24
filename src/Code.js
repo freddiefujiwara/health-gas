@@ -1287,7 +1287,9 @@ export const summarizeWorkDay_ = (events, dateKey) => {
       at: parsePresenceTimestamp_(ev && ev.timestamp),
       action: ev && ev.action,
       place: ev && ev.place,
+      person: ev && ev.person,
     }))
+    .filter(ev => ev.person === PRESENCE_PERSON)
     .filter(ev => ev.place === 'work' && (ev.action === 'arrive' || ev.action === 'leave'))
     .filter(ev => Number.isFinite(ev.at) && jstDateKey_(ev.at) === dateKey)
     .sort((a, b) => a.at - b.at);
@@ -1432,7 +1434,9 @@ export const summarizeHomeDay_ = (events, dateKey) => {
       at: parsePresenceTimestamp_(ev && ev.timestamp),
       action: ev && ev.action,
       place: ev && ev.place,
+      person: ev && ev.person,
     }))
+    .filter(ev => ev.person === PRESENCE_PERSON)
     .filter(ev => ev.place === 'home' && (ev.action === 'arrive' || ev.action === 'leave'))
     .filter(ev => Number.isFinite(ev.at))
     .sort((a, b) => a.at - b.at);

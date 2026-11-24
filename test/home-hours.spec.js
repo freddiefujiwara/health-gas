@@ -77,3 +77,20 @@ describe("summarizeHomeDay_", () => {
     expect(summarizeHomeDay_(events, "2026-11-24").status).toBe("未確定");
   });
 });
+
+describe("summarizeHomeDay_ person filter", () => {
+  it("ignores other people's home events", () => {
+    const events = [
+      ev("2026-11-23T19:00:00+09:00", "arrive"),
+      // The daughter's school-derived home events must not leak in.
+      { timestamp: "2026-11-24T07:40:00+09:00", person: "aojiru.pudding", place: "home", action: "leave" },
+      { timestamp: "2026-11-24T16:20:00+09:00", person: "aojiru.pudding", place: "home", action: "arrive" },
+      ev("2026-11-24T19:30:00+09:00", "leave"),
+    ];
+    const s = summarizeHomeDay_(events, "2026-11-24");
+    expect(s.status).toBe("確定");
+    expect(s.homeMinutes).toBe(19 * 60 + 30);
+    expect(s.firstLeave).toBe("19:30");
+    expect(s.outingCount).toBe(1);
+  });
+});
