@@ -150,10 +150,15 @@ describe("doGet", () => {
         cacheStore.delete(key);
       }
     }
-    mockRange.getValues.mockReturnValue([
-      ["date", "steps"],
-      ["2026-08-24", 7000],
-    ]);
+    const changedSheet = {
+      getDataRange: () => ({
+        getValues: () => [
+          ["date", "steps"],
+          ["2026-08-24", 7000],
+        ],
+      }),
+    };
+    mockSpreadsheet.getSheetByName.mockReturnValue(changedSheet);
     doGet(authedEvent());
     const second = JSON.parse(mockContentService.setContent.mock.calls[1][0]);
     expect(second.steps).toEqual([{ date: "2026-08-23", steps: 6148 }]);
