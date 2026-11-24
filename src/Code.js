@@ -23,6 +23,7 @@ const SHEET_NAMES = [
   "chat_activity_daily_hours",
   "sleep_estimates",
   "work_hours",
+  "home_hours",
 ];
 
 const getSpreadsheet = () =>
@@ -1286,7 +1287,9 @@ export const summarizeWorkDay_ = (events, dateKey) => {
       at: parsePresenceTimestamp_(ev && ev.timestamp),
       action: ev && ev.action,
       place: ev && ev.place,
+      person: ev && ev.person,
     }))
+    .filter(ev => ev.person === PRESENCE_PERSON)
     .filter(ev => ev.place === 'work' && (ev.action === 'arrive' || ev.action === 'leave'))
     .filter(ev => Number.isFinite(ev.at) && jstDateKey_(ev.at) === dateKey)
     .sort((a, b) => a.at - b.at);
@@ -1398,19 +1401,174 @@ const recordWorkHoursFromEvents_ = (events, dateKey) => {
   upsertWorkHoursRow_(dateKey, summarizeWorkDay_(events, dateKey));
 };
 
+// --- Home hours (presence-gas import) --------------------------------
+// The same morning import also stores the minutes spent at home
+// (place=home) as one row of the home_hours sheet. Unlike work, a
+// home stay normally spans midnight, so the state at the start of
+// the day is taken from the last home event before it, stays are
+// clipped at the day boundaries, and an arrive left open at day end
+// is normal (the stay continues into the next day). A day whose
+// starting state cannot be determined, or whose events are out of
+// order (duplicate arrive, stray leave), is 未確定 with no minutes;
+// a day with no home events in the fetched window is 記録なし.
+
+const HOME_HOURS_SHEET_NAME = 'home_hours';
+const HOME_HOURS_HEADERS = [
+  'date',
+  'home_minutes',
+  'status',
+  'first_leave',
+  'last_arrive',
+  'outing_count',
+  'source',
+  'updated_at',
+  'notes',
+];
+
+// Pure summary of one JST day's home events.
+export const summarizeHomeDay_ = (events, dateKey) => {
+  const dayStart = Date.parse(dateKey + 'T00:00:00+09:00');
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  const home = (events || [])
+    .map(ev => ({
+      at: parsePresenceTimestamp_(ev && ev.timestamp),
+      action: ev && ev.action,
+      place: ev && ev.place,
+      person: ev && ev.person,
+    }))
+    .filter(ev => ev.person === PRESENCE_PERSON)
+    .filter(ev => ev.place === 'home' && (ev.action === 'arrive' || ev.action === 'leave'))
+    .filter(ev => Number.isFinite(ev.at))
+    .sort((a, b) => a.at - b.at);
+  const before = home.filter(ev => ev.at < dayStart);
+  const during = home.filter(ev => ev.at >= dayStart && ev.at < dayEnd);
+  if (!before.length && !during.length) {
+    return { status: '記録なし', homeMinutes: null, firstLeave: '', lastArrive: '', outingCount: 0 };
+  }
+  let atHome = null;
+  if (before.length) {
+    atHome = before[before.length - 1].action === 'arrive';
+  }
+  let complete = atHome !== null;
+  let totalMinutes = 0;
+  let openAt = atHome ? dayStart : null;
+  let firstLeave = '';
+  let lastArrive = '';
+  let outingCount = 0;
+  during.forEach(ev => {
+    if (ev.action === 'leave') {
+      if (!firstLeave) {
+        firstLeave = jstHhmm_(ev.at);
+      }
+      if (openAt === null) {
+        complete = false;
+      } else {
+        totalMinutes += (ev.at - openAt) / 60000;
+        openAt = null;
+        outingCount += 1;
+      }
+      atHome = false;
+    } else {
+      lastArrive = jstHhmm_(ev.at);
+      if (openAt !== null) {
+        complete = false;
+      } else {
+        openAt = ev.at;
+      }
+      atHome = true;
+    }
+  });
+  if (openAt !== null) {
+    totalMinutes += (dayEnd - openAt) / 60000;
+  }
+  const status = complete ? '確定' : '未確定';
+  return {
+    status,
+    homeMinutes: status === '確定' ? Math.round(totalMinutes) : null,
+    firstLeave,
+    lastArrive,
+    outingCount,
+  };
+};
+
+const ensureHomeHoursSheet_ = () => {
+  let sheet = getSheet(HOME_HOURS_SHEET_NAME);
+  if (!sheet) {
+    sheet = getSpreadsheet().insertSheet(HOME_HOURS_SHEET_NAME);
+    sheet.getRange(1, 1, 1, HOME_HOURS_HEADERS.length).setValues([HOME_HOURS_HEADERS]);
+  }
+  return sheet;
+};
+
+const upsertHomeHoursRow_ = (dateKey, summary) => {
+  const sheet = ensureHomeHoursSheet_();
+  const values = sheet.getDataRange().getValues();
+  let rowIndex = -1;
+  for (let i = 1; i < values.length; i += 1) {
+    const cell = values[i][0];
+    const key = cell instanceof Date ? jstDateKey_(cell.getTime()) : String(cell).slice(0, 10);
+    if (key === dateKey) {
+      rowIndex = i;
+      break;
+    }
+  }
+  const row = [
+    dateKey,
+    summary.homeMinutes === null ? '' : summary.homeMinutes,
+    summary.status,
+    summary.firstLeave,
+    summary.lastArrive,
+    summary.outingCount,
+    'presence-gas',
+    new Date().toISOString(),
+    '',
+  ];
+  if (rowIndex >= 0) {
+    sheet.getRange(rowIndex + 1, 1, 1, row.length).setValues([row]);
+  } else {
+    sheet.getRange(values.length + 1, 1, 1, row.length).setValues([row]);
+  }
+};
+
+const recordHomeHoursFromEvents_ = (events, dateKey) => {
+  upsertHomeHoursRow_(dateKey, summarizeHomeDay_(events, dateKey));
+};
+
 // Trigger entry point: records yesterday (JST). A failed fetch leaves
 // the day missing rather than writing a guessed row.
 function recordYesterdayWorkHours() {
   const yesterdayKey = jstDateKey_(Date.now() - 24 * 60 * 60 * 1000);
-  const events = fetchPresenceEvents_(yesterdayKey);
+  // Home hours need the state at the start of the day, so the fetch
+  // reaches two days further back; the work summary only reads the
+  // target day's events and is unaffected by the wider window.
+  const sinceKey = jstDateKey_(
+    Date.parse(yesterdayKey + 'T00:00:00+09:00') - 2 * 24 * 60 * 60 * 1000,
+  );
+  const events = fetchPresenceEvents_(sinceKey);
   if (events === null) {
     return;
   }
   recordWorkHoursFromEvents_(events, yesterdayKey);
+  recordHomeHoursFromEvents_(events, yesterdayKey);
 }
 
 // One-off backfill from a date key (e.g. '2026-11-22') up to
 // yesterday, fetching the whole range in a single request.
+// One-off backfill of home hours from a date key up to yesterday.
+function backfillHomeHours(fromKey) {
+  const fetchFrom = jstDateKey_(
+    Date.parse(fromKey + 'T00:00:00+09:00') - 2 * 24 * 60 * 60 * 1000,
+  );
+  const events = fetchPresenceEvents_(fetchFrom);
+  if (events === null) {
+    return;
+  }
+  const yesterdayMs = Date.parse(jstDateKey_(Date.now() - 24 * 60 * 60 * 1000) + 'T00:00:00+09:00');
+  for (let ms = Date.parse(fromKey + 'T00:00:00+09:00'); ms <= yesterdayMs; ms += 24 * 60 * 60 * 1000) {
+    recordHomeHoursFromEvents_(events, jstDateKey_(ms));
+  }
+}
+
 function backfillWorkHours(fromKey) {
   const events = fetchPresenceEvents_(fromKey);
   if (events === null) {

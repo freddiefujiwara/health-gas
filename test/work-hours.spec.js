@@ -78,3 +78,18 @@ describe("summarizeWorkDay_", () => {
     expect(summary.status).toBe("記録なし");
   });
 });
+
+describe("summarizeWorkDay_ person filter", () => {
+  it("ignores other people's work events", () => {
+    const events = [
+      ev("2026-11-24T09:00:00+09:00", "arrive"),
+      { timestamp: "2026-11-24T10:00:00+09:00", person: "aojiru.pudding", place: "work", action: "arrive" },
+      { timestamp: "2026-11-24T11:00:00+09:00", person: "aojiru.pudding", place: "work", action: "leave" },
+      ev("2026-11-24T18:00:00+09:00", "leave"),
+    ];
+    const s = summarizeWorkDay_(events, "2026-11-24");
+    expect(s.status).toBe("確定");
+    expect(s.netMinutes).toBe(540);
+    expect(s.pairCount).toBe(1);
+  });
+});
