@@ -25,6 +25,7 @@ const SHEET_NAMES = [
   "work_hours",
   "home_hours",
   "home_segments",
+  "work_segments",
 ];
 
 const getSpreadsheet = () =>
@@ -435,6 +436,7 @@ const ACTIVITY_SHEET_NAMES = [
   'work_hours',
   'home_hours',
   'home_segments',
+  'work_segments',
 ];
 const ACTIVITY_DAILY_HOURS_WINDOW_DAYS = 62;
 const LATE_NIGHT_HOURS_ = [23, 0, 1, 2, 3, 4];
@@ -1446,7 +1448,10 @@ export const parsePresenceTimestamp_ = value => {
 // only when every arrive is closed by a leave (status 確定). A
 // duplicate arrive while already at work and a stray or duplicate
 // leave while away are ignored: they add no information and used to
-// mark the whole day 未確定.
+// mark the whole day 未確定. Besides the totals it returns the
+// day's closed stays as segments (minutes from midnight, state
+// 'work') so the dashboard can plot the work bands; an unclosed
+// arrive contributes no segment.
 export const summarizeWorkDay_ = (events, dateKey) => {
   const work = (events || [])
     .map(ev => ({
@@ -1460,14 +1465,16 @@ export const summarizeWorkDay_ = (events, dateKey) => {
     .filter(ev => Number.isFinite(ev.at) && jstDateKey_(ev.at) === dateKey)
     .sort((a, b) => a.at - b.at);
   if (!work.length) {
-    return { status: '記録なし', netMinutes: null, firstArrive: '', lastLeave: '', pairCount: 0 };
+    return { status: '記録なし', netMinutes: null, firstArrive: '', lastLeave: '', pairCount: 0, segments: [] };
   }
+  const dayStart = Date.parse(dateKey + 'T00:00:00+09:00');
   let openAt = null;
   let complete = true;
   let pairCount = 0;
   let totalMinutes = 0;
   let firstArrive = '';
   let lastLeave = '';
+  const segments = [];
   work.forEach(ev => {
     if (ev.action === 'arrive') {
       if (!firstArrive) {
@@ -1483,6 +1490,14 @@ export const summarizeWorkDay_ = (events, dateKey) => {
       lastLeave = jstHhmm_(ev.at);
       totalMinutes += (ev.at - openAt) / 60000;
       pairCount += 1;
+      const seg = {
+        startMinute: Math.round((openAt - dayStart) / 60000),
+        endMinute: Math.round((ev.at - dayStart) / 60000),
+        state: 'work',
+      };
+      if (seg.endMinute > seg.startMinute) {
+        segments.push(seg);
+      }
       openAt = null;
     }
   });
@@ -1496,6 +1511,7 @@ export const summarizeWorkDay_ = (events, dateKey) => {
     firstArrive,
     lastLeave,
     pairCount,
+    segments,
   };
 };
 
@@ -1560,8 +1576,60 @@ const upsertWorkHoursRow_ = (dateKey, summary) => {
   }
 };
 
+const WORK_SEGMENTS_SHEET_NAME = 'work_segments';
+const WORK_SEGMENTS_HEADERS = [
+  'date',
+  'start_minute',
+  'end_minute',
+  'state',
+  'minutes',
+  'source',
+  'updated_at',
+];
+
+const ensureWorkSegmentsSheet_ = () => {
+  let sheet = getSheet(WORK_SEGMENTS_SHEET_NAME);
+  if (!sheet) {
+    sheet = getSpreadsheet().insertSheet(WORK_SEGMENTS_SHEET_NAME);
+    sheet.getRange(1, 1, 1, WORK_SEGMENTS_HEADERS.length).setValues([WORK_SEGMENTS_HEADERS]);
+  }
+  return sheet;
+};
+
+// Segments for a day are rewritten as a set: the day's old rows are
+// deleted and the freshly computed ones appended.
+const replaceWorkSegments_ = (dateKey, segments) => {
+  const sheet = ensureWorkSegmentsSheet_();
+  const values = sheet.getDataRange().getValues();
+  const staleRows = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const cell = values[i][0];
+    const key = cell instanceof Date ? jstDateKey_(cell.getTime()) : String(cell).slice(0, 10);
+    if (key === dateKey) {
+      staleRows.push(i + 1);
+    }
+  }
+  staleRows
+    .sort((a, b) => b - a)
+    .forEach(rowNumber => sheet.deleteRow(rowNumber));
+  const nowIso = new Date().toISOString();
+  segments.forEach(seg => {
+    sheet.appendRow([
+      dateKey,
+      seg.startMinute,
+      seg.endMinute,
+      seg.state,
+      seg.endMinute - seg.startMinute,
+      'presence-gas',
+      nowIso,
+    ]);
+  });
+};
+
 const recordWorkHoursFromEvents_ = (events, dateKey) => {
-  upsertWorkHoursRow_(dateKey, summarizeWorkDay_(events, dateKey));
+  const summary = summarizeWorkDay_(events, dateKey);
+  upsertWorkHoursRow_(dateKey, summary);
+  replaceWorkSegments_(dateKey, summary.segments);
 };
 
 // --- Home hours (presence-gas import) --------------------------------
@@ -1865,6 +1933,7 @@ const NORMALIZE_NUMERIC_COLUMNS_ = {
   sleep_estimates: ['duration_minutes_est'],
   work_hours: ['net_work_minutes', 'pair_count'],
   home_segments: ['start_minute', 'end_minute', 'minutes'],
+  work_segments: ['start_minute', 'end_minute', 'minutes'],
 };
 
 // Pure cell rule: a string that is exactly a numeric literal becomes

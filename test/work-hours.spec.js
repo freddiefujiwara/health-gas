@@ -32,6 +32,7 @@ describe("summarizeWorkDay_", () => {
       firstArrive: "09:00",
       lastLeave: "18:30",
       pairCount: 1,
+      segments: [{ startMinute: 540, endMinute: 1110, state: "work" }],
     });
   });
 
@@ -110,5 +111,52 @@ describe("summarizeWorkDay_ person filter", () => {
     expect(s.status).toBe("確定");
     expect(s.netMinutes).toBe(540);
     expect(s.pairCount).toBe(1);
+  });
+});
+
+describe("summarizeWorkDay_ segments", () => {
+  it("returns one segment per closed stay, split at a midday break", () => {
+    const summary = summarizeWorkDay_(
+      [
+        ev("2026-11-21T09:00:00+09:00", "arrive"),
+        ev("2026-11-21T12:00:00+09:00", "leave"),
+        ev("2026-11-21T13:00:00+09:00", "arrive"),
+        ev("2026-11-21T18:00:00+09:00", "leave"),
+      ],
+      "2026-11-21",
+    );
+    expect(summary.segments).toEqual([
+      { startMinute: 540, endMinute: 720, state: "work" },
+      { startMinute: 780, endMinute: 1080, state: "work" },
+    ]);
+  });
+
+  it("keeps closed pairs as segments even when a later arrive is unclosed", () => {
+    const summary = summarizeWorkDay_(
+      [
+        ev("2026-11-21T09:00:00+09:00", "arrive"),
+        ev("2026-11-21T12:00:00+09:00", "leave"),
+        ev("2026-11-21T13:00:00+09:00", "arrive"),
+      ],
+      "2026-11-21",
+    );
+    expect(summary.status).toBe("未確定");
+    expect(summary.segments).toEqual([{ startMinute: 540, endMinute: 720, state: "work" }]);
+  });
+
+  it("starts the segment at the first arrive when a duplicate arrive follows", () => {
+    const summary = summarizeWorkDay_(
+      [
+        ev("2026-11-21T09:00:00+09:00", "arrive"),
+        ev("2026-11-21T09:05:00+09:00", "arrive"),
+        ev("2026-11-21T18:00:00+09:00", "leave"),
+      ],
+      "2026-11-21",
+    );
+    expect(summary.segments).toEqual([{ startMinute: 540, endMinute: 1080, state: "work" }]);
+  });
+
+  it("returns no segments when there are no work events", () => {
+    expect(summarizeWorkDay_([], "2026-11-21").segments).toEqual([]);
   });
 });
