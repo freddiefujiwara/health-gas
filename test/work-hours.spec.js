@@ -50,6 +50,25 @@ describe("summarizeWorkDay_", () => {
     expect(summary.pairCount).toBe(2);
   });
 
+  it("ignores a duplicate arrive and a duplicate leave", () => {
+    const summary = summarizeWorkDay_(
+      [
+        ev("2026-11-21T09:00:00+09:00", "arrive"),
+        ev("2026-11-21T09:05:00+09:00", "arrive"),
+        ev("2026-11-21T12:00:00+09:00", "leave"),
+        ev("2026-11-21T12:30:00+09:00", "leave"),
+        ev("2026-11-21T13:00:00+09:00", "arrive"),
+        ev("2026-11-21T18:00:00+09:00", "leave"),
+      ],
+      "2026-11-21",
+    );
+    expect(summary.status).toBe("確定");
+    expect(summary.netMinutes).toBe(180 + 300);
+    expect(summary.pairCount).toBe(2);
+    expect(summary.firstArrive).toBe("09:00");
+    expect(summary.lastLeave).toBe("18:00");
+  });
+
   it("marks an unclosed arrive as 未確定 with no minutes", () => {
     const summary = summarizeWorkDay_([ev("2026-11-21T09:00:00+09:00", "arrive")], "2026-11-21");
     expect(summary.status).toBe("未確定");

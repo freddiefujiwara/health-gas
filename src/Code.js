@@ -1443,7 +1443,10 @@ export const parsePresenceTimestamp_ = value => {
 };
 
 // Pure summary of one JST day's work events. Returns the net minutes
-// only when every arrive is closed by a leave (status 確定).
+// only when every arrive is closed by a leave (status 確定). A
+// duplicate arrive while already at work and a stray or duplicate
+// leave while away are ignored: they add no information and used to
+// mark the whole day 未確定.
 export const summarizeWorkDay_ = (events, dateKey) => {
   const work = (events || [])
     .map(ev => ({
@@ -1470,20 +1473,17 @@ export const summarizeWorkDay_ = (events, dateKey) => {
       if (!firstArrive) {
         firstArrive = jstHhmm_(ev.at);
       }
-      if (openAt !== null) {
-        complete = false;
-      } else {
+      if (openAt === null) {
         openAt = ev.at;
       }
     } else {
-      lastLeave = jstHhmm_(ev.at);
       if (openAt === null) {
-        complete = false;
-      } else {
-        totalMinutes += (ev.at - openAt) / 60000;
-        pairCount += 1;
-        openAt = null;
+        return;
       }
+      lastLeave = jstHhmm_(ev.at);
+      totalMinutes += (ev.at - openAt) / 60000;
+      pairCount += 1;
+      openAt = null;
     }
   });
   if (openAt !== null) {
@@ -1570,10 +1570,13 @@ const recordWorkHoursFromEvents_ = (events, dateKey) => {
 // home stay normally spans midnight, so the state at the start of
 // the day is taken from the last home event before it, stays are
 // clipped at the day boundaries, and an arrive left open at day end
-// is normal (the stay continues into the next day). A day whose
-// starting state cannot be determined, or whose events are out of
-// order (duplicate arrive, stray leave), is 未確定 with no minutes;
-// a day with no home events in the fetched window is 記録なし.
+// is normal (the stay continues into the next day). An event that
+// does not change the state (a duplicate arrive while home, a
+// duplicate leave while out) is ignored. When the starting state
+// cannot be determined, accounting starts at the day's first event
+// (the earlier part of the day is simply not covered), the same
+// convention the segments below already use. A day with no home
+// events in the fetched window is 記録なし.
 
 const HOME_HOURS_SHEET_NAME = 'home_hours';
 const HOME_HOURS_HEADERS = [
@@ -1593,8 +1596,7 @@ const HOME_HOURS_HEADERS = [
 // state 'home' or 'out') so the dashboard can show the flow of the
 // day. Segments start at the day's first event when the starting
 // state is unknown (the earlier part of the day is simply not
-// covered); when the event order is broken they are dropped, since
-// a guessed sequence would be worse than none.
+// covered).
 export const summarizeHomeDay_ = (events, dateKey) => {
   const dayStart = Date.parse(dateKey + 'T00:00:00+09:00');
   const dayEnd = dayStart + 24 * 60 * 60 * 1000;
@@ -1614,61 +1616,44 @@ export const summarizeHomeDay_ = (events, dateKey) => {
   if (!before.length && !during.length) {
     return { status: '記録なし', homeMinutes: null, firstLeave: '', lastArrive: '', outingCount: 0, segments: [] };
   }
-  let atHome = null;
-  if (before.length) {
-    atHome = before[before.length - 1].action === 'arrive';
-  }
-  let complete = atHome !== null;
+  const initial = before.length ? before[before.length - 1].action : null;
+  let state = initial === null ? null : initial === 'arrive' ? 'home' : 'out';
+  let openAt = state === 'home' ? dayStart : null;
+  let segStart = dayStart;
   let totalMinutes = 0;
-  let openAt = atHome ? dayStart : null;
   let firstLeave = '';
   let lastArrive = '';
   let outingCount = 0;
-  let state = atHome === null ? null : atHome ? 'home' : 'out';
-  let segStart = dayStart;
-  let segmentsBroken = false;
   const rawSegments = [];
   during.forEach(ev => {
     if (ev.action === 'leave') {
+      if (state === 'out') {
+        return;
+      }
       if (!firstLeave) {
         firstLeave = jstHhmm_(ev.at);
       }
-      if (openAt === null) {
-        complete = false;
-      } else {
+      if (openAt !== null) {
         totalMinutes += (ev.at - openAt) / 60000;
         openAt = null;
-        outingCount += 1;
       }
+      outingCount += 1;
       if (state === 'home') {
         rawSegments.push({ startAt: segStart, endAt: ev.at, state: 'home' });
-        state = 'out';
-        segStart = ev.at;
-      } else if (state === 'out') {
-        segmentsBroken = true;
-      } else {
-        state = 'out';
-        segStart = ev.at;
       }
-      atHome = false;
+      state = 'out';
+      segStart = ev.at;
     } else {
-      lastArrive = jstHhmm_(ev.at);
-      if (openAt !== null) {
-        complete = false;
-      } else {
-        openAt = ev.at;
+      if (state === 'home') {
+        return;
       }
+      lastArrive = jstHhmm_(ev.at);
+      openAt = ev.at;
       if (state === 'out') {
         rawSegments.push({ startAt: segStart, endAt: ev.at, state: 'out' });
-        state = 'home';
-        segStart = ev.at;
-      } else if (state === 'home') {
-        segmentsBroken = true;
-      } else {
-        state = 'home';
-        segStart = ev.at;
       }
-      atHome = true;
+      state = 'home';
+      segStart = ev.at;
     }
   });
   if (openAt !== null) {
@@ -1677,19 +1662,16 @@ export const summarizeHomeDay_ = (events, dateKey) => {
   if (state !== null) {
     rawSegments.push({ startAt: segStart, endAt: dayEnd, state });
   }
-  const segments = segmentsBroken
-    ? []
-    : rawSegments
-        .map(seg => ({
-          startMinute: Math.round((seg.startAt - dayStart) / 60000),
-          endMinute: Math.round((seg.endAt - dayStart) / 60000),
-          state: seg.state,
-        }))
-        .filter(seg => seg.endMinute > seg.startMinute);
-  const status = complete ? '確定' : '未確定';
+  const segments = rawSegments
+    .map(seg => ({
+      startMinute: Math.round((seg.startAt - dayStart) / 60000),
+      endMinute: Math.round((seg.endAt - dayStart) / 60000),
+      state: seg.state,
+    }))
+    .filter(seg => seg.endMinute > seg.startMinute);
   return {
-    status,
-    homeMinutes: status === '確定' ? Math.round(totalMinutes) : null,
+    status: '確定',
+    homeMinutes: Math.round(totalMinutes),
     firstLeave,
     lastArrive,
     outingCount,
