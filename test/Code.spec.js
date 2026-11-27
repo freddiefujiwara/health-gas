@@ -139,6 +139,16 @@ describe("doGet", () => {
     expect(data.daily_nutrition).toEqual([{ date: "2026-08-23", steps: 6148 }]);
   });
 
+  it("includes cpap_reports in the full payload and as a single sheet", () => {
+    doGet(authedEvent());
+    const data = JSON.parse(mockContentService.setContent.mock.calls[0][0]);
+    expect(data.cpap_reports).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+
+    doGet(authedEvent({ sheet: "cpap_reports" }));
+    const single = JSON.parse(mockContentService.setContent.mock.calls[1][0]);
+    expect(single).toEqual([{ date: "2026-08-23", steps: 6148 }]);
+  });
+
   it("serves the full payload from the assembled cache on later requests", () => {
     doGet(authedEvent());
     const first = JSON.parse(mockContentService.setContent.mock.calls[0][0]);
