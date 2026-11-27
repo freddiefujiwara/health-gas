@@ -160,3 +160,19 @@ describe("summarizeWorkDay_ segments", () => {
     expect(summarizeWorkDay_([], "2026-11-21").segments).toEqual([]);
   });
 });
+
+describe("summarizeWorkDay_ flicker tolerance", () => {
+  it("merges a stay split by a seconds-long flicker pair", () => {
+    const events = [
+      ev("2026-11-26T09:00:00+09:00", "arrive", "work"),
+      ev("2026-11-26T12:00:00+09:00", "leave", "work"),
+      ev("2026-11-26T12:00:30+09:00", "arrive", "work"),
+      ev("2026-11-26T18:00:00+09:00", "leave", "work"),
+    ];
+    const s = summarizeWorkDay_(events, "2026-11-26");
+    expect(s.status).toBe("確定");
+    expect(s.netMinutes).toBe(540);
+    expect(s.pairCount).toBe(1);
+    expect(s.segments).toEqual([{ startMinute: 540, endMinute: 1080, state: "work" }]);
+  });
+});

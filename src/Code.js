@@ -1444,6 +1444,32 @@ export const parsePresenceTimestamp_ = value => {
   return Date.parse(text);
 };
 
+// A Wi-Fi drop at home fires leave and arrive within seconds of each
+// other (in either order, when the two automations race). Such a
+// flicker pair is not a real outing: drop both events before
+// summarizing, so a momentary disconnect cannot flip the state for
+// the rest of the day. A genuine out-and-back takes longer than the
+// window, so it is kept.
+const FLICKER_WINDOW_MS = 60 * 1000;
+
+const dropFlickerPairs_ = sortedEvents => {
+  const kept = [];
+  for (let i = 0; i < sortedEvents.length; i += 1) {
+    const current = sortedEvents[i];
+    const next = sortedEvents[i + 1];
+    if (
+      next &&
+      next.action !== current.action &&
+      next.at - current.at <= FLICKER_WINDOW_MS
+    ) {
+      i += 1;
+      continue;
+    }
+    kept.push(current);
+  }
+  return kept;
+};
+
 // Pure summary of one JST day's work events. Returns the net minutes
 // only when every arrive is closed by a leave (status 確定). A
 // duplicate arrive while already at work and a stray or duplicate
@@ -1464,7 +1490,8 @@ export const summarizeWorkDay_ = (events, dateKey) => {
     .filter(ev => ev.place === 'work' && (ev.action === 'arrive' || ev.action === 'leave'))
     .filter(ev => Number.isFinite(ev.at) && jstDateKey_(ev.at) === dateKey)
     .sort((a, b) => a.at - b.at);
-  if (!work.length) {
+  const stays = dropFlickerPairs_(work);
+  if (!stays.length) {
     return { status: '記録なし', netMinutes: null, firstArrive: '', lastLeave: '', pairCount: 0, segments: [] };
   }
   const dayStart = Date.parse(dateKey + 'T00:00:00+09:00');
@@ -1475,7 +1502,7 @@ export const summarizeWorkDay_ = (events, dateKey) => {
   let firstArrive = '';
   let lastLeave = '';
   const segments = [];
-  work.forEach(ev => {
+  stays.forEach(ev => {
     if (ev.action === 'arrive') {
       if (!firstArrive) {
         firstArrive = jstHhmm_(ev.at);
@@ -1679,8 +1706,9 @@ export const summarizeHomeDay_ = (events, dateKey) => {
     .filter(ev => ev.place === 'home' && (ev.action === 'arrive' || ev.action === 'leave'))
     .filter(ev => Number.isFinite(ev.at))
     .sort((a, b) => a.at - b.at);
-  const before = home.filter(ev => ev.at < dayStart);
-  const during = home.filter(ev => ev.at >= dayStart && ev.at < dayEnd);
+  const stable = dropFlickerPairs_(home);
+  const before = stable.filter(ev => ev.at < dayStart);
+  const during = stable.filter(ev => ev.at >= dayStart && ev.at < dayEnd);
   if (!before.length && !during.length) {
     return { status: '記録なし', homeMinutes: null, firstLeave: '', lastArrive: '', outingCount: 0, segments: [] };
   }

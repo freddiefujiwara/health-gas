@@ -196,3 +196,53 @@ describe("summarizeHomeDay_ segments", () => {
     ]);
   });
 });
+
+describe("summarizeHomeDay_ flicker tolerance", () => {
+  // The real 2026-11-26 evening: a Wi-Fi drop fired leave/arrive
+  // pairs seconds apart, one of them in inverted timestamp order.
+  const evening = [
+    ev("2026-11-25T19:00:00+09:00", "arrive"),
+    ev("2026-11-26T04:54:00+09:00", "leave"),
+    ev("2026-11-26T19:36:00+09:00", "arrive"),
+    ev("2026-11-26T19:44:05+09:00", "leave"),
+    ev("2026-11-26T19:44:16+09:00", "arrive"),
+    ev("2026-11-26T20:04:59.943+09:00", "arrive"),
+    ev("2026-11-26T20:04:59.968+09:00", "leave"),
+  ];
+
+  it("ignores Wi-Fi flicker pairs and stays home for the evening", () => {
+    const s = summarizeHomeDay_(evening, "2026-11-26");
+    expect(s.status).toBe("確定");
+    expect(s.homeMinutes).toBe(294 + 264);
+    expect(s.outingCount).toBe(1);
+    expect(s.firstLeave).toBe("04:54");
+    expect(s.lastArrive).toBe("19:36");
+    expect(s.segments).toEqual([
+      { startMinute: 0, endMinute: 294, state: "home" },
+      { startMinute: 294, endMinute: 1176, state: "out" },
+      { startMinute: 1176, endMinute: 1440, state: "home" },
+    ]);
+  });
+
+  it("starts the next day at home after an evening flicker", () => {
+    const events = [...evening, ev("2026-11-27T05:11:00+09:00", "leave")];
+    const s = summarizeHomeDay_(events, "2026-11-27");
+    expect(s.homeMinutes).toBe(311);
+    expect(s.outingCount).toBe(1);
+    expect(s.segments).toEqual([
+      { startMinute: 0, endMinute: 311, state: "home" },
+      { startMinute: 311, endMinute: 1440, state: "out" },
+    ]);
+  });
+
+  it("still counts a genuine short outing of a few minutes", () => {
+    const events = [
+      ev("2026-11-25T19:00:00+09:00", "arrive"),
+      ev("2026-11-26T12:00:00+09:00", "leave"),
+      ev("2026-11-26T12:05:00+09:00", "arrive"),
+    ];
+    const s = summarizeHomeDay_(events, "2026-11-26");
+    expect(s.outingCount).toBe(1);
+    expect(s.homeMinutes).toBe(1440 - 5);
+  });
+});
