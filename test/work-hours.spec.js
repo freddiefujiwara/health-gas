@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parsePresenceTimestamp_, summarizeWorkDay_ } from "../src/Code.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parsePresenceTimestamp_, replaceHomeSegments_, replaceWorkSegments_, summarizeWorkDay_ } from "../src/Code.js";
 
 const ev = (timestamp, action, place = "work") => ({ timestamp, person: "freddiefujiwara", place, action });
 
@@ -174,5 +174,53 @@ describe("summarizeWorkDay_ flicker tolerance", () => {
     expect(s.netMinutes).toBe(540);
     expect(s.pairCount).toBe(1);
     expect(s.segments).toEqual([{ startMinute: 540, endMinute: 1080, state: "work" }]);
+  });
+});
+
+describe.each([
+  ["work_segments", "work", replaceWorkSegments_],
+  ["home_segments", "home", replaceHomeSegments_],
+])("%s row replacement", (sheetName, state, replaceSegments) => {
+  const date = "2026-11-21";
+  const now = "2026-11-22T01:02:03.000Z";
+  const header = ["date", "start_minute", "end_minute", "state", "minutes", "source", "updated_at"];
+  const earlier = ["2026-11-20", 60, 120, state, 60, "presence-gas", now];
+  const later = ["2026-11-22", 90, 120, state, 30, "presence-gas", now];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it.each([true, false])("rewrites only the target day (append=%s)", (append) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    const rows = [
+      header,
+      [date + "T00:00:00", 100, 110],
+      earlier,
+      [new Date("2026-11-20T15:00:00Z"), 120, 130],
+      later,
+    ];
+    const sheet = {
+      getDataRange: () => ({ getValues: () => rows.map((row) => [...row]) }),
+      deleteRow: vi.fn((rowNumber) => rows.splice(rowNumber - 1, 1)),
+      appendRow: vi.fn((row) => rows.push(row)),
+    };
+    const getSheetByName = vi.fn((name) => name === sheetName ? sheet : null);
+    vi.stubGlobal("SpreadsheetApp", { openById: () => ({ getSheetByName }) });
+    const segments = [
+      { startMinute: 540, endMinute: 570, state },
+      { startMinute: 600, endMinute: 660, state },
+    ];
+    replaceSegments(date, append ? segments : []);
+    expect(getSheetByName.mock.calls).toEqual([[sheetName]]);
+    expect(sheet.deleteRow.mock.calls).toEqual([[4], [2]]);
+    const added = append ? [
+      [date, 540, 570, state, 30, "presence-gas", now],
+      [date, 600, 660, state, 60, "presence-gas", now],
+    ] : [];
+    expect(sheet.appendRow.mock.calls).toEqual(added.map((row) => [row]));
+    expect(rows).toEqual([header, earlier, later, ...added]);
   });
 });
