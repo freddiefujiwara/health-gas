@@ -1626,8 +1626,7 @@ const ensureWorkSegmentsSheet_ = () => {
 
 // Segments for a day are rewritten as a set: the day's old rows are
 // deleted and the freshly computed ones appended.
-const replaceWorkSegments_ = (dateKey, segments) => {
-  const sheet = ensureWorkSegmentsSheet_();
+const replaceSegmentRows_ = (sheet, dateKey, segments) => {
   const values = sheet.getDataRange().getValues();
   const staleRows = [];
   for (let i = 1; i < values.length; i += 1) {
@@ -1653,6 +1652,9 @@ const replaceWorkSegments_ = (dateKey, segments) => {
     ]);
   });
 };
+
+export const replaceWorkSegments_ = (dateKey, segments) =>
+  replaceSegmentRows_(ensureWorkSegmentsSheet_(), dateKey, segments);
 
 const recordWorkHoursFromEvents_ = (events, dateKey) => {
   const summary = summarizeWorkDay_(events, dateKey);
@@ -1835,35 +1837,8 @@ const ensureHomeSegmentsSheet_ = () => {
   return sheet;
 };
 
-// Segments for a day are rewritten as a set: the day's old rows are
-// deleted and the freshly computed ones appended.
-const replaceHomeSegments_ = (dateKey, segments) => {
-  const sheet = ensureHomeSegmentsSheet_();
-  const values = sheet.getDataRange().getValues();
-  const staleRows = [];
-  for (let i = 1; i < values.length; i += 1) {
-    const cell = values[i][0];
-    const key = cell instanceof Date ? jstDateKey_(cell.getTime()) : String(cell).slice(0, 10);
-    if (key === dateKey) {
-      staleRows.push(i + 1);
-    }
-  }
-  staleRows
-    .sort((a, b) => b - a)
-    .forEach(rowNumber => sheet.deleteRow(rowNumber));
-  const nowIso = new Date().toISOString();
-  segments.forEach(seg => {
-    sheet.appendRow([
-      dateKey,
-      seg.startMinute,
-      seg.endMinute,
-      seg.state,
-      seg.endMinute - seg.startMinute,
-      'presence-gas',
-      nowIso,
-    ]);
-  });
-};
+export const replaceHomeSegments_ = (dateKey, segments) =>
+  replaceSegmentRows_(ensureHomeSegmentsSheet_(), dateKey, segments);
 
 const recordHomeHoursFromEvents_ = (events, dateKey) => {
   const summary = summarizeHomeDay_(events, dateKey);
